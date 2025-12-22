@@ -1,5 +1,6 @@
-const User = require('../models/User');
+const prisma = require('../config/prismaClient');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -11,21 +12,23 @@ exports.register = async (req, res) => {
     const { name, email, password, role } = req.body;
 
     try {
-        const userExists = await User.findOne({ where: { email } });
+        const userExists = await prisma.user.findUnique({ where: { email } });
 
         if (userExists) {
             return res.status(400).json({ message: 'User already exists' });
         }
 
-        // Only admins can create admin/vendor users directly via this API in a real scenario,
-        // but for initial setup, we might allow it or restrict it later.
-        // For now, let's allow basic registration.
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
 
-        const user = await User.create({
-            name,
-            email,
-            password,
-            role: role || 'customer'
+        const user = await prisma.user.create({
+            data: {
+                name,
+                email,
+                password: hashedPassword,
+                role: role || 'customer'
+            }
         });
 
         if (user) {
@@ -48,9 +51,9 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        const user = await User.findOne({ where: { email } });
+        const user = await prisma.user.findUnique({ where: { email } });
 
-        if (user && (await user.matchPassword(password))) {
+        if (user && (await bcrypt.compare(password, user.password))) {
             res.json({
                 _id: user.id,
                 name: user.name,
@@ -67,12 +70,17 @@ exports.login = async (req, res) => {
 };
 
 exports.getMe = async (req, res) => {
-    // Use middleware to attach user to req
     try {
-        const user = await User.findByPk(req.user.id, {
-            attributes: { exclude: ['password', 'otp', 'otpExpires'] }
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id }
         });
-        res.json(user);
+
+        if (user) {
+            const { password, otp, otpExpires, ...userWithoutSensitive } = user;
+            res.json(userWithoutSensitive);
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
     } catch (error) {
         res.status(500).json({ message: 'Server Error' });
     }
@@ -92,21 +100,27 @@ exports.sendOtp = async (req, res) => {
         const otp = generateOTP();
         const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
-        let user = await User.findOne({ where: { phoneNumber } });
+        let user = await prisma.user.findUnique({ where: { phoneNumber } });
 
         if (!user) {
             // Create new partial user
-            user = await User.create({
-                phoneNumber,
-                role: 'customer',
-                otp,
-                otpExpires
+            user = await prisma.user.create({
+                data: {
+                    phoneNumber,
+                    role: 'customer',
+                    otp,
+                    otpExpires
+                }
             });
         } else {
             // Update existing user OTP
-            user.otp = otp;
-            user.otpExpires = otpExpires;
-            await user.save();
+            user = await prisma.user.update({
+                where: { phoneNumber },
+                data: {
+                    otp,
+                    otpExpires
+                }
+            });
         }
 
         // In a real app, send SMS here.
@@ -131,7 +145,7 @@ exports.verifyOtp = async (req, res) => {
     }
 
     try {
-        const user = await User.findOne({ where: { phoneNumber } });
+        const user = await prisma.user.findUnique({ where: { phoneNumber } });
 
         if (!user) {
             return res.status(400).json({ message: 'User not found' });
@@ -146,9 +160,13 @@ exports.verifyOtp = async (req, res) => {
         }
 
         // Clear OTP
-        user.otp = null;
-        user.otpExpires = null;
-        await user.save();
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                otp: null,
+                otpExpires: null
+            }
+        });
 
         res.json({
             _id: user.id,

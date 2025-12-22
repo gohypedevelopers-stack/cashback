@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const { connectDB } = require('./config/database');
-const { sequelize } = require('./models');
+// const { connectDB } = require('./config/database'); // Removed
+// const { sequelize } = require('./models'); // Removed
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
@@ -29,12 +29,13 @@ app.get('/', (req, res) => {
     res.send('Coupon Cashback API is running...');
 });
 
-// Database Connection & Sync
+// Database Connection (Prisma connects lazily, but we can test connection)
+const prisma = require('./config/prismaClient');
+
 const startServer = async () => {
     try {
-        await connectDB();
-        await sequelize.sync({ alter: true }); // Syncs models to DB
-        console.log('Database Synced');
+        await prisma.$connect();
+        console.log('Database Connected Successfully');
 
         const PORT = process.env.PORT || 5000;
         app.listen(PORT, () => {
@@ -42,8 +43,7 @@ const startServer = async () => {
         });
     } catch (error) {
         console.error('Failed to start server:', error);
-        const fs = require('fs');
-        fs.writeFileSync('server_error.log', `Error: ${error.message}\n${error.stack}`);
+        process.exit(1);
     }
 };
 

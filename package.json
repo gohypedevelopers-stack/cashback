@@ -20,5 +20,9 @@
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.7",
     "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "@prisma/client": "^7.2.0",
+    "prisma": "^7.2.0"
   }
 }

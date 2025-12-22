@@ -1,11 +1,13 @@
-const { Brand, Campaign, Vendor, User, Wallet } = require('../models');
+const prisma = require('../config/prismaClient');
 
 // --- Brand Management ---
 
 exports.createBrand = async (req, res) => {
     try {
         const { name, logoUrl, website } = req.body;
-        const brand = await Brand.create({ name, logoUrl, website });
+        const brand = await prisma.brand.create({
+            data: { name, logoUrl, website }
+        });
         res.status(201).json(brand);
     } catch (error) {
         res.status(500).json({ message: 'Error creating brand', error: error.message });
@@ -14,7 +16,7 @@ exports.createBrand = async (req, res) => {
 
 exports.getAllBrands = async (req, res) => {
     try {
-        const brands = await Brand.findAll();
+        const brands = await prisma.brand.findMany();
         res.json(brands);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brands', error: error.message });
@@ -28,17 +30,19 @@ exports.createCampaign = async (req, res) => {
         const { brandId, title, description, cashbackAmount, startDate, endDate, totalBudget } = req.body;
 
         // Validation: Check if Brand exists
-        const brand = await Brand.findByPk(brandId);
+        const brand = await prisma.brand.findUnique({ where: { id: brandId } });
         if (!brand) return res.status(404).json({ message: 'Brand not found' });
 
-        const campaign = await Campaign.create({
-            brandId,
-            title,
-            description,
-            cashbackAmount,
-            startDate,
-            endDate,
-            totalBudget
+        const campaign = await prisma.campaign.create({
+            data: {
+                brandId,
+                title,
+                description,
+                cashbackAmount,
+                startDate: new Date(startDate),
+                endDate: new Date(endDate),
+                totalBudget
+            }
         });
         res.status(201).json(campaign);
     } catch (error) {
@@ -48,7 +52,7 @@ exports.createCampaign = async (req, res) => {
 
 exports.getAllCampaigns = async (req, res) => {
     try {
-        const campaigns = await Campaign.findAll({ include: Brand });
+        const campaigns = await prisma.campaign.findMany({ include: { Brand: true } });
         res.json(campaigns);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching campaigns', error: error.message });
@@ -59,7 +63,9 @@ exports.getAllCampaigns = async (req, res) => {
 
 exports.getAllVendors = async (req, res) => {
     try {
-        const vendors = await Vendor.findAll({ include: [User, Wallet] });
+        const vendors = await prisma.vendor.findMany({
+            include: { User: true, Wallet: true }
+        });
         res.json(vendors);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching vendors', error: error.message });
@@ -73,18 +79,25 @@ exports.createVendorProfile = async (req, res) => {
     const { userId, businessName, contactPhone, gstin } = req.body;
 
     try {
-        const vendor = await Vendor.create({
-            userId,
-            businessName,
-            contactPhone,
-            gstin
+        const vendor = await prisma.vendor.create({
+            data: {
+                userId,
+                businessName,
+                contactPhone,
+                gstin
+            }
         });
 
         // Create an empty wallet for the vendor
-        await Wallet.create({ vendorId: vendor.id });
+        await prisma.wallet.create({
+            data: { vendorId: vendor.id }
+        });
 
         // Update User role if not already vendor
-        await User.update({ role: 'vendor' }, { where: { id: userId } });
+        await prisma.user.update({
+            where: { id: userId },
+            data: { role: 'vendor' }
+        });
 
         res.status(201).json(vendor);
     } catch (error) {

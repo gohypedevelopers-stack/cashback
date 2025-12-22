@@ -1,0 +1,166 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(uuid())
+  name        String?
+  email       String?   @unique
+  phoneNumber String?   @unique
+  password    String?
+  role        Role      @default(customer)
+  status      Status    @default(active)
+  otp         String?
+  otpExpires  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  Vendor      Vendor?
+  Wallet      Wallet?
+}
+
+model Vendor {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  businessName String
+  contactPhone String?
+  gstin        String?
+  address      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  User         User     @relation(fields: [userId], references: [id])
+  Wallet       Wallet?
+}
+
+model Brand {
+  id        String     @id @default(uuid())
+  name      String
+  logoUrl   String?
+  website   String?
+  status    BrandStatus @default(active)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  Campaigns Campaign[]
+}
+
+model Campaign {
+  id             String    @id @default(uuid())
+  brandId        String
+  title          String
+  description    String?
+  cashbackAmount Decimal   @db.Decimal(10, 2)
+  startDate      DateTime
+  endDate        DateTime
+  totalBudget    Decimal?  @db.Decimal(12, 2)
+  status         CampaignStatus @default(active)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  Brand          Brand     @relation(fields: [brandId], references: [id])
+  QRCodes        QRCode[]
+}
+
+model QRCode {
+  id                  String       @id @default(uuid())
+  campaignId          String
+  vendorId            String?
+  uniqueHash          String       @unique
+  status              QRStatus     @default(generated)
+  redeemedByUserId    String?
+  redeemedAt          DateTime?
+  payoutTransactionId String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  Campaign            Campaign     @relation(fields: [campaignId], references: [id])
+}
+
+model Wallet {
+  id            String   @id @default(uuid())
+  vendorId      String?  @unique
+  userId        String?  @unique
+  balance       Decimal  @default(0.00) @db.Decimal(12, 2)
+  lockedBalance Decimal  @default(0.00) @db.Decimal(12, 2)
+  currency      String   @default("INR")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  Vendor        Vendor?  @relation(fields: [vendorId], references: [id])
+  User          User?    @relation(fields: [userId], references: [id])
+  Transactions  Transaction[]
+}
+
+model Transaction {
+  id          String   @id @default(uuid())
+  walletId    String
+  type        TransactionType
+  amount      Decimal  @db.Decimal(12, 2)
+  category    TransactionCategory
+  status      TransactionStatus @default(pending)
+  referenceId String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  Wallet      Wallet   @relation(fields: [walletId], references: [id])
+}
+
+enum Role {
+  admin
+  vendor
+  customer
+}
+
+enum Status {
+  active
+  inactive
+  blocked
+}
+
+enum BrandStatus {
+  active
+  inactive
+}
+
+enum CampaignStatus {
+  active
+  paused
+  completed
+}
+
+enum QRStatus {
+  generated
+  assigned
+  active
+  redeemed
+  expired
+  blocked
+}
+
+enum TransactionType {
+  credit
+  debit
+}
+
+enum TransactionCategory {
+  recharge
+  qr_purchase
+  cashback_payout
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  success
+  failed
+}

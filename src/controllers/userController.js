@@ -1,21 +1,22 @@
-const { User, Wallet, Transaction } = require('../models');
+const prisma = require('../config/prismaClient');
 
 exports.getDashboard = async (req, res) => {
     try {
         const userId = req.user.id;
 
         // Fetch User with Wallet and recent Transactions
-        const user = await User.findByPk(userId, {
-            attributes: ['id', 'name', 'phoneNumber', 'email'],
-            include: [{
-                model: Wallet,
-                as: 'Wallet', // Assuming association alias, or default 'Wallet'
-                include: [{
-                    model: Transaction,
-                    limit: 10,
-                    order: [['createdAt', 'DESC']]
-                }]
-            }]
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            include: {
+                Wallet: {
+                    include: {
+                        Transactions: {
+                            take: 10,
+                            orderBy: { createdAt: 'desc' }
+                        }
+                    }
+                }
+            }
         });
 
         if (!user) {

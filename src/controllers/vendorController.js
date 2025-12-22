@@ -1,4 +1,4 @@
-const { Vendor, Wallet, Transaction, Campaign, QRCode, sequelize } = require('../models');
+const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 
 // Helper to generate unique hash
@@ -8,10 +8,10 @@ const generateQRHash = () => {
 
 exports.getWalletBalance = async (req, res) => {
     try {
-        const vendor = await Vendor.findOne({ where: { userId: req.user.id } });
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
 
-        const wallet = await Wallet.findOne({ where: { vendorId: vendor.id } });
+        const wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
         if (!wallet) return res.status(404).json({ message: 'Wallet not found' });
 
         res.json(wallet);
@@ -21,91 +21,112 @@ exports.getWalletBalance = async (req, res) => {
 };
 
 exports.rechargeWallet = async (req, res) => {
-    const t = await sequelize.transaction();
     try {
         const { amount } = req.body; // In real app, this comes from Payment Gateway callback
-        const vendor = await Vendor.findOne({ where: { userId: req.user.id } });
-        if (!vendor) throw new Error('Vendor not found');
 
-        const wallet = await Wallet.findOne({ where: { vendorId: vendor.id } });
+        await prisma.$transaction(async (tx) => {
+            const vendor = await tx.vendor.findUnique({ where: { userId: req.user.id } });
+            if (!vendor) throw new Error('Vendor not found');
 
-        // Update Wallet
-        wallet.balance = parseFloat(wallet.balance) + parseFloat(amount);
-        await wallet.save({ transaction: t });
+            const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
+            if (!wallet) throw new Error('Wallet not found');
 
-        // Log Transaction
-        await Transaction.create({
-            walletId: wallet.id,
-            type: 'credit',
-            amount,
-            category: 'recharge',
-            status: 'success',
-            description: 'Wallet recharge'
-        }, { transaction: t });
+            // Update Wallet
+            const updatedWallet = await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { increment: amount } }
+            });
 
-        await t.commit();
-        res.json({ message: 'Wallet recharged successfully', balance: wallet.balance });
+            // Log Transaction
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'credit',
+                    amount,
+                    category: 'recharge',
+                    status: 'success',
+                    description: 'Wallet recharge'
+                }
+            });
+
+            return updatedWallet;
+        });
+
+        res.json({ message: 'Wallet recharged successfully' });
     } catch (error) {
-        await t.rollback();
         res.status(500).json({ message: 'Recharge failed', error: error.message });
     }
 };
 
 exports.orderQRs = async (req, res) => {
-    const t = await sequelize.transaction();
     try {
         const { campaignId, quantity } = req.body;
-        const vendor = await Vendor.findOne({ where: { userId: req.user.id } });
 
-        const campaign = await Campaign.findByPk(campaignId);
-        if (!campaign) throw new Error('Campaign not found');
+        const count = await prisma.$transaction(async (tx) => {
+            const vendor = await tx.vendor.findUnique({ where: { userId: req.user.id } });
+            if (!vendor) throw new Error('Vendor not found');
 
-        const totalCost = parseFloat(campaign.cashbackAmount) * parseInt(quantity);
-        const wallet = await Wallet.findOne({ where: { vendorId: vendor.id } });
+            const campaign = await tx.campaign.findUnique({ where: { id: campaignId } });
+            if (!campaign) throw new Error('Campaign not found');
 
-        if (parseFloat(wallet.balance) < totalCost) {
-            throw new Error('Insufficient wallet balance');
-        }
+            const totalCost = parseFloat(campaign.cashbackAmount) * parseInt(quantity);
+            const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
 
-        // Deduct Balance
-        wallet.balance = parseFloat(wallet.balance) - totalCost;
-        await wallet.save({ transaction: t });
+            if (parseFloat(wallet.balance) < totalCost) {
+                throw new Error('Insufficient wallet balance');
+            }
 
-        // Log Transaction
-        await Transaction.create({
-            walletId: wallet.id,
-            type: 'debit',
-            amount: totalCost,
-            category: 'qr_purchase',
-            status: 'success',
-            description: `Purchased ${quantity} QRs for Campaign ${campaign.title}`
-        }, { transaction: t });
-
-        // Generate QRs
-        const qrData = [];
-        for (let i = 0; i < quantity; i++) {
-            qrData.push({
-                campaignId,
-                vendorId: vendor.id,
-                uniqueHash: generateQRHash(),
-                status: 'generated'
+            // Deduct Balance
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { decrement: totalCost } }
             });
-        }
 
-        const qrs = await QRCode.bulkCreate(qrData, { transaction: t });
+            // Log Transaction
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'debit',
+                    amount: totalCost,
+                    category: 'qr_purchase',
+                    status: 'success',
+                    description: `Purchased ${quantity} QRs for Campaign ${campaign.title}`
+                }
+            });
 
-        await t.commit();
-        res.status(201).json({ message: 'QRs generated successfully', count: qrs.length });
+            // Generate QRs
+            // Note: createMany is not supported for relation fields if needing to return data, 
+            // but here we just need to insert. PostgreSQL supports createMany.
+            const qrData = [];
+            for (let i = 0; i < quantity; i++) {
+                qrData.push({
+                    campaignId,
+                    vendorId: vendor.id,
+                    uniqueHash: generateQRHash(),
+                    status: 'generated'
+                });
+            }
+
+            await tx.qRCode.createMany({ data: qrData });
+
+            return qrData.length;
+        });
+
+        res.status(201).json({ message: 'QRs generated successfully', count });
     } catch (error) {
-        await t.rollback();
         res.status(500).json({ message: 'Order failed', error: error.message });
     }
 };
 
 exports.getMyQRs = async (req, res) => {
     try {
-        const vendor = await Vendor.findOne({ where: { userId: req.user.id } });
-        const qrs = await QRCode.findAll({ where: { vendorId: vendor.id } });
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const qrs = await prisma.qRCode.findMany({
+            where: { vendorId: vendor.id },
+            include: { Campaign: true } // Assuming relation name
+        });
         res.json(qrs);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching QRs', error: error.message });
