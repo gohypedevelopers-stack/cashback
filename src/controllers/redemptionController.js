@@ -43,13 +43,11 @@ exports.verifyQR = async (req, res) => {
     }
 };
 
-exports.redeemQR = async (req, res) => {
+exports.scanAndRedeem = async (req, res) => {
     const t = await sequelize.transaction();
     try {
         const { hash } = req.params;
-        const { upiId } = req.body;
-
-        if (!upiId) return res.status(400).json({ message: 'UPI ID is required' });
+        const userId = req.user.id; // From Auth Middleware
 
         const qr = await QRCode.findOne({
             where: { uniqueHash: hash },
@@ -58,32 +56,51 @@ exports.redeemQR = async (req, res) => {
 
         if (!qr) throw new Error('Invalid QR Code');
         if (qr.status === 'redeemed') throw new Error('QR Code already redeemed');
+        if (qr.status !== 'generated' && qr.status !== 'assigned') throw new Error('QR Code not active');
+
+        // Check Campaign Validity
+        const now = new Date();
+        if (now < new Date(qr.Campaign.startDate) || now > new Date(qr.Campaign.endDate)) {
+            throw new Error('Campaign expired or not started');
+        }
+
+        const cashbackAmount = parseFloat(qr.Campaign.cashbackAmount);
+
+        // Find or Create User Wallet
+        let wallet = await Wallet.findOne({ where: { userId } });
+        if (!wallet) {
+            wallet = await Wallet.create({ userId, balance: 0.00 }, { transaction: t });
+        }
+
+        // Credit Wallet
+        wallet.balance = parseFloat(wallet.balance) + cashbackAmount;
+        await wallet.save({ transaction: t });
+
+        // Record Transaction
+        await Transaction.create({
+            walletId: wallet.id,
+            type: 'credit',
+            amount: cashbackAmount,
+            category: 'cashback_payout',
+            status: 'success',
+            description: `Cashback for Campaign: ${qr.Campaign.title}`,
+            referenceId: hash
+        }, { transaction: t });
 
         // Update QR Status
         qr.status = 'redeemed';
-        qr.redeemedAt = new Date();
-        qr.payoutTransactionId = `PAY_${Date.now()}_${Math.floor(Math.random() * 1000)}`; // Mock Payout ID
+        qr.redeemedByUserId = userId;
+        qr.redeemedAt = now;
+        qr.payoutTransactionId = `WALLET_${wallet.id}_${Date.now()}`;
         await qr.save({ transaction: t });
-
-        // In a real system, we might need to record this payout in a central ledger 
-        // or trigger an async job for the UPI API. 
-        // Here we just log it as a transaction for the Campaign/Brand context if needed,
-        // but the money was already deducted from Vendor Wallet during creation.
-        // We can optionally create a 'payout' transaction record linked to the vendor wallet purely for reporting.
-
-        // Find vendor wallet to link the payout record (for reporting)
-        // Note: Amount is 0 here because it was already debited, or we track it as a 'cashback_payout' 
-        // with 0 impact on balance if we use a modification of the logic.
-        // For now, let's just create a record that doesn't affect balance, or affects a 'payouts' accumulator.
-        // Simplifying: Just mock the success response.
 
         await t.commit();
 
         res.json({
             success: true,
-            message: 'Cashback redemption initiated successfully',
-            transactionId: qr.payoutTransactionId,
-            amount: qr.Campaign.cashbackAmount
+            message: 'Cashback added to wallet successfully',
+            amount: cashbackAmount,
+            newBalance: wallet.balance
         });
 
     } catch (error) {

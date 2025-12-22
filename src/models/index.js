@@ -16,6 +16,10 @@ Vendor.belongsTo(User, { foreignKey: 'userId' });
 Vendor.hasOne(Wallet, { foreignKey: 'vendorId', onDelete: 'CASCADE' });
 Wallet.belongsTo(Vendor, { foreignKey: 'vendorId' });
 
+// User & Wallet
+User.hasOne(Wallet, { foreignKey: 'userId', onDelete: 'CASCADE' });
+Wallet.belongsTo(User, { foreignKey: 'userId' });
+
 // Brand & Campaign
 Brand.hasMany(Campaign, { foreignKey: 'brandId', onDelete: 'CASCADE' });
 Campaign.belongsTo(Brand, { foreignKey: 'brandId' });

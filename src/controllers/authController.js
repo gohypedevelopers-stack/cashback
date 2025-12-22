@@ -70,10 +70,95 @@ exports.getMe = async (req, res) => {
     // Use middleware to attach user to req
     try {
         const user = await User.findByPk(req.user.id, {
-            attributes: { exclude: ['password'] }
+            attributes: { exclude: ['password', 'otp', 'otpExpires'] }
         });
         res.json(user);
     } catch (error) {
         res.status(500).json({ message: 'Server Error' });
+    }
+};
+
+// Generate 4 digit OTP
+const generateOTP = () => Math.floor(1000 + Math.random() * 9000).toString();
+
+exports.sendOtp = async (req, res) => {
+    const { phoneNumber } = req.body;
+
+    if (!phoneNumber) {
+        return res.status(400).json({ message: 'Phone number is required' });
+    }
+
+    try {
+        const otp = generateOTP();
+        const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+        let user = await User.findOne({ where: { phoneNumber } });
+
+        if (!user) {
+            // Create new partial user
+            user = await User.create({
+                phoneNumber,
+                role: 'customer',
+                otp,
+                otpExpires
+            });
+        } else {
+            // Update existing user OTP
+            user.otp = otp;
+            user.otpExpires = otpExpires;
+            await user.save();
+        }
+
+        // In a real app, send SMS here.
+        console.log(`OTP for ${phoneNumber}: ${otp}`);
+
+        res.json({
+            success: true,
+            message: 'OTP sent successfully',
+            otp // Returning OTP for demo/testing purposes
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.verifyOtp = async (req, res) => {
+    const { phoneNumber, otp } = req.body;
+
+    if (!phoneNumber || !otp) {
+        return res.status(400).json({ message: 'Phone number and OTP are required' });
+    }
+
+    try {
+        const user = await User.findOne({ where: { phoneNumber } });
+
+        if (!user) {
+            return res.status(400).json({ message: 'User not found' });
+        }
+
+        if (user.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        if (new Date() > user.otpExpires) {
+            return res.status(400).json({ message: 'OTP Expired' });
+        }
+
+        // Clear OTP
+        user.otp = null;
+        user.otpExpires = null;
+        await user.save();
+
+        res.json({
+            _id: user.id,
+            name: user.name,
+            phoneNumber: user.phoneNumber,
+            role: user.role,
+            token: generateToken(user.id, user.role)
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };

@@ -7,6 +7,7 @@ const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
 const publicRoutes = require('./routes/publicRoutes');
+const userRoutes = require('./routes/userRoutes');
 require('dotenv').config();
 
 const app = express();
@@ -22,6 +23,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/vendor', vendorRoutes);
 app.use('/api/public', publicRoutes);
+app.use('/api/user', userRoutes);
 
 app.get('/', (req, res) => {
     res.send('Coupon Cashback API is running...');
@@ -40,6 +42,8 @@ const startServer = async () => {
         });
     } catch (error) {
         console.error('Failed to start server:', error);
+        const fs = require('fs');
+        fs.writeFileSync('server_error.log', `Error: ${error.message}\n${error.stack}`);
     }
 };
 

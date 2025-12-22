@@ -10,19 +10,32 @@ const User = sequelize.define('User', {
     },
     name: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: true // Nullable for phone-only signup
     },
     email: {
         type: DataTypes.STRING,
-        allowNull: false,
+        allowNull: true,
         unique: true,
         validate: {
             isEmail: true
         }
     },
+    phoneNumber: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        unique: true
+    },
+    otp: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    otpExpires: {
+        type: DataTypes.DATE,
+        allowNull: true
+    },
     password: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: true
     },
     role: {
         type: DataTypes.ENUM('admin', 'vendor', 'customer'),
