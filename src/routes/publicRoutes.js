@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { verifyQR, redeemQR } = require('../controllers/redemptionController');
+const { verifyQR, scanAndRedeem } = require('../controllers/redemptionController');
 
 router.get('/qrs/:hash', verifyQR);
-router.post('/qrs/:hash/redeem', redeemQR);
+router.post('/qrs/:hash/redeem', scanAndRedeem);
 
 module.exports = router;

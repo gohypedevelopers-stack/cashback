@@ -109,10 +109,10 @@ exports.orderQRs = async (req, res) => {
 
             await tx.qRCode.createMany({ data: qrData });
 
-            return qrData.length;
+            return qrData;
         });
 
-        res.status(201).json({ message: 'QRs generated successfully', count });
+        res.status(201).json({ message: 'QRs generated successfully', count: count.length, qrs: count });
     } catch (error) {
         res.status(500).json({ message: 'Order failed', error: error.message });
     }

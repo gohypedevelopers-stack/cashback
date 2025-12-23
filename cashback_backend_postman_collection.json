@@ -289,6 +289,25 @@
                     "response": []
                 },
                 {
+                    "name": "Get All Campaigns",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/admin/campaigns",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "admin",
+                                "campaigns"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
                     "name": "Create Vendor Profile",
                     "request": {
                         "method": "POST",
@@ -302,6 +321,25 @@
                                 }
                             }
                         },
+                        "url": {
+                            "raw": "{{base_url}}/api/admin/vendors",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "admin",
+                                "vendors"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get All Vendors",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
                         "url": {
                             "raw": "{{base_url}}/api/admin/vendors",
                             "host": [
