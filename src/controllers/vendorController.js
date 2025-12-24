@@ -132,3 +132,96 @@ exports.getMyQRs = async (req, res) => {
         res.status(500).json({ message: 'Error fetching QRs', error: error.message });
     }
 };
+
+exports.getDashboardStats = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({
+            where: { userId: req.user.id },
+            include: { Wallet: true }
+        });
+
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const [totalQRs, redeemedQRs, totalSpent] = await Promise.all([
+            prisma.qRCode.count({ where: { vendorId: vendor.id } }),
+            prisma.qRCode.count({ where: { vendorId: vendor.id, status: 'redeemed' } }),
+            prisma.transaction.aggregate({
+                where: {
+                    walletId: vendor.Wallet.id,
+                    type: 'debit'
+                },
+                _sum: { amount: true }
+            })
+        ]);
+
+        res.json({
+            wallet: {
+                balance: vendor.Wallet.balance,
+                currency: vendor.Wallet.currency
+            },
+            stats: {
+                totalQRsGenerated: totalQRs,
+                totalQRsRedeemed: redeemedQRs,
+                totalSpent: totalSpent._sum.amount || 0
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching stats', error: error.message });
+    }
+};
+
+exports.getVendorTransactions = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({
+            where: { userId: req.user.id },
+            include: { Wallet: true }
+        });
+
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const transactions = await prisma.transaction.findMany({
+            where: { walletId: vendor.Wallet.id },
+            orderBy: { createdAt: 'desc' },
+            take: 50
+        });
+
+        res.json(transactions);
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching transactions', error: error.message });
+    }
+};
+
+exports.getActiveCampaigns = async (req, res) => {
+    try {
+        const campaigns = await prisma.campaign.findMany({
+            where: { status: 'active' },
+            include: { Brand: true },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(campaigns);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching campaigns', error: error.message });
+    }
+};
+
+exports.updateVendorProfile = async (req, res) => {
+    try {
+        const { businessName, contactPhone, gstin, address } = req.body;
+
+        const vendor = await prisma.vendor.update({
+            where: { userId: req.user.id },
+            data: {
+                businessName,
+                contactPhone,
+                gstin,
+                address
+            }
+        });
+
+        res.json({ message: 'Profile updated successfully', vendor });
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};

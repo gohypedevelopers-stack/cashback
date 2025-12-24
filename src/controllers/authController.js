@@ -180,3 +180,5 @@ exports.verifyOtp = async (req, res) => {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };
+
+

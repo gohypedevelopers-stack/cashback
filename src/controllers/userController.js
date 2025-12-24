@@ -107,3 +107,67 @@ exports.requestPayout = async (req, res) => {
         res.status(500).json({ message: error.message || 'Payout failed' });
     }
 };
+
+exports.getRedemptionHistory = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const redemptions = await prisma.qRCode.findMany({
+            where: { redeemedByUserId: userId, status: 'redeemed' },
+            include: { Campaign: { include: { Brand: true } } },
+            orderBy: { redeemedAt: 'desc' }
+        });
+        res.json(redemptions);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching redemptions', error: error.message });
+    }
+};
+
+exports.getTransactionHistory = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            include: { Wallet: true }
+        });
+
+        if (!user || !user.Wallet) return res.json({ transactions: [], count: 0 });
+
+        const [transactions, count] = await Promise.all([
+            prisma.transaction.findMany({
+                where: { walletId: user.Wallet.id },
+                orderBy: { createdAt: 'desc' },
+                skip: skip,
+                take: limit
+            }),
+            prisma.transaction.count({ where: { walletId: user.Wallet.id } })
+        ]);
+
+        res.json({
+            transactions,
+            pagination: {
+                total: count,
+                page: page,
+                pages: Math.ceil(count / limit)
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching transactions', error: error.message });
+    }
+};
+
+exports.updateUserProfile = async (req, res) => {
+    try {
+        const { name, email } = req.body;
+        const user = await prisma.user.update({
+            where: { id: req.user.id },
+            data: { name, email }
+        });
+        res.json({ message: 'Profile updated', user });
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
