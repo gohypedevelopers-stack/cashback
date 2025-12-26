@@ -69,6 +69,10 @@ exports.orderQRs = async (req, res) => {
             const campaign = await tx.campaign.findUnique({ where: { id: campaignId } });
             if (!campaign) throw new Error('Campaign not found');
 
+            if (campaign.status !== 'active') {
+                throw new Error('Campaign is not active (Pending or Rejected)');
+            }
+
             const totalCost = parseFloat(campaign.cashbackAmount) * parseInt(quantity);
             const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
 
@@ -223,5 +227,62 @@ exports.updateVendorProfile = async (req, res) => {
         res.json({ message: 'Profile updated successfully', vendor });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.requestBrand = async (req, res) => {
+    try {
+        const { name, logoUrl, website } = req.body;
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const brand = await prisma.brand.create({
+            data: {
+                name,
+                logoUrl,
+                website,
+                status: 'active', // Auto-active as per new requirement
+                vendorId: vendor.id
+            }
+        });
+        res.status(201).json({ message: 'Brand created successfully', brand });
+    } catch (error) {
+        res.status(500).json({ message: 'Request failed', error: error.message });
+    }
+};
+
+exports.requestCampaign = async (req, res) => {
+    try {
+        const { brandId, title, description, cashbackAmount, startDate, endDate, totalBudget } = req.body;
+
+        // Verify ownership/status of brand
+        const brand = await prisma.brand.findUnique({ where: { id: brandId } });
+        if (!brand) return res.status(404).json({ message: 'Brand not found' });
+
+        // Ensure brand is active (which it should be now)
+        // Optional: Check if brand belongs to vendor (if strict ownership is needed)
+        // const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        // if (brand.vendorId !== vendor.id) return res.status(403).json({ message: 'Unauthorized brand' });
+
+        if (brand.status !== 'active') {
+            return res.status(400).json({ message: 'Brand is not active' });
+        }
+
+        const campaign = await prisma.campaign.create({
+            data: {
+                brandId,
+                title,
+                description,
+                cashbackAmount,
+                startDate: new Date(startDate),
+                endDate: new Date(endDate),
+                totalBudget,
+                status: 'active' // Auto-active as per new requirement
+            }
+        });
+        res.status(201).json({ message: 'Campaign created successfully', campaign });
+    } catch (error) {
+        res.status(500).json({ message: 'Request failed', error: error.message });
     }
 };

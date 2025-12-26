@@ -39,6 +39,7 @@ model Vendor {
 
   User         User     @relation(fields: [userId], references: [id])
   Wallet       Wallet?
+  Brands       Brand[]
 }
 
 model Brand {
@@ -46,9 +47,12 @@ model Brand {
   name      String
   logoUrl   String?
   website   String?
-  status    BrandStatus @default(active)
+  status    BrandStatus @default(pending)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+  
+  vendorId  String?
+  Vendor    Vendor?    @relation(fields: [vendorId], references: [id])
 
   Campaigns Campaign[]
 }
@@ -62,7 +66,7 @@ model Campaign {
   startDate      DateTime
   endDate        DateTime
   totalBudget    Decimal?  @db.Decimal(12, 2)
-  status         CampaignStatus @default(active)
+  status         CampaignStatus @default(pending)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -130,12 +134,16 @@ enum Status {
 enum BrandStatus {
   active
   inactive
+  pending
+  rejected
 }
 
 enum CampaignStatus {
   active
   paused
   completed
+  pending
+  rejected
 }
 
 enum QRStatus {
