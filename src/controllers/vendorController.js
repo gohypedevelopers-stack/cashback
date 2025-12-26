@@ -237,6 +237,11 @@ exports.requestBrand = async (req, res) => {
 
         if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
 
+        // Strict Check: Vendor must be verified/active
+        if (vendor.status !== 'active') { // Assuming schema update applied
+            return res.status(403).json({ message: 'Vendor account is pending verification' });
+        }
+
         const brand = await prisma.brand.create({
             data: {
                 name,

@@ -203,3 +203,171 @@ exports.verifyCampaign = async (req, res) => {
         res.status(500).json({ message: 'Verification failed', error: error.message });
     }
 };
+
+// --- System Analytics ---
+
+exports.getSystemStats = async (req, res) => {
+    try {
+        const [userCount, vendorCount, activeCampaigns, totalTransactions] = await Promise.all([
+            prisma.user.count({ where: { role: 'customer' } }),
+            prisma.vendor.count(),
+            prisma.campaign.count({ where: { status: 'active' } }),
+            prisma.transaction.count()
+        ]);
+
+        res.json({
+            users: userCount,
+            vendors: vendorCount,
+            activeCampaigns,
+            totalTransactions
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching stats', error: error.message });
+    }
+};
+
+// --- User Management ---
+
+exports.getAllUsers = async (req, res) => {
+    try {
+        const users = await prisma.user.findMany({
+            where: { role: 'customer' },
+            select: { id: true, name: true, email: true, phoneNumber: true, status: true, createdAt: true }
+        });
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching users', error: error.message });
+    }
+};
+
+exports.updateUserStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active' or 'blocked'
+
+        if (!['active', 'blocked'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status' });
+        }
+
+        const user = await prisma.user.update({
+            where: { id },
+            data: { status }
+        });
+        res.json({ message: `User ${status}`, user });
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+// --- Global Audit ---
+
+exports.getAllTransactions = async (req, res) => {
+    try {
+        const transactions = await prisma.transaction.findMany({
+            include: { Wallet: { include: { User: { select: { name: true, email: true } }, Vendor: { select: { businessName: true } } } } },
+            orderBy: { createdAt: 'desc' },
+            take: 100 // Limit for performance
+        });
+        res.json(transactions);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching transactions', error: error.message });
+    }
+};
+
+exports.getAllQRs = async (req, res) => {
+    try {
+        const qrs = await prisma.qRCode.findMany({
+            include: { Campaign: { select: { title: true, Brand: { select: { name: true } } } } },
+            orderBy: { createdAt: 'desc' },
+            take: 100
+        });
+        res.json(qrs);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching QRs', error: error.message });
+    }
+};
+
+// --- Advanced Admin Controls ---
+
+exports.verifyVendor = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active' or 'rejected'
+        const newStatus = status === 'rejected' ? 'rejected' : 'active';
+
+        const vendor = await prisma.vendor.update({
+            where: { id },
+            data: { status: newStatus }
+        });
+        res.json({ message: `Vendor ${newStatus}`, vendor });
+    } catch (error) {
+        res.status(500).json({ message: 'Verification failed', error: error.message });
+    }
+};
+
+exports.creditWallet = async (req, res) => {
+    try {
+        const { vendorId, amount, description } = req.body;
+
+        // Transactional update
+        const result = await prisma.$transaction(async (tx) => {
+            const wallet = await tx.wallet.update({
+                where: { vendorId },
+                data: { balance: { increment: parseFloat(amount) } }
+            });
+
+            const transaction = await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'credit',
+                    amount: parseFloat(amount),
+                    category: 'recharge', // Admin manual recharge
+                    status: 'success',
+                    description: description || 'Admin manual credit'
+                }
+            });
+            return { wallet, transaction };
+        });
+
+        res.json({ message: 'Wallet credited successfully', data: result });
+    } catch (error) {
+        res.status(500).json({ message: 'Credit failed', error: error.message });
+    }
+};
+
+exports.updateCampaignStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active', 'paused', 'rejected', 'completed'
+
+        if (!['active', 'paused', 'rejected', 'completed'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status' });
+        }
+
+        const campaign = await prisma.campaign.update({
+            where: { id },
+            data: { status }
+        });
+        res.json({ message: `Campaign status updated to ${status}`, campaign });
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.getVendorDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const vendor = await prisma.vendor.findUnique({
+            where: { id },
+            include: {
+                User: { select: { name: true, email: true, phoneNumber: true } },
+                Wallet: true,
+                Brands: { include: { Campaigns: true } }
+            }
+        });
+        if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+        res.json(vendor);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching details', error: error.message });
+    }
+};
