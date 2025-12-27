@@ -25,6 +25,7 @@ model User {
 
   Vendor      Vendor?
   Wallet      Wallet?
+  PayoutMethods PayoutMethod[]
 }
 
 model Vendor {
@@ -103,6 +104,7 @@ model Wallet {
   Vendor        Vendor?  @relation(fields: [vendorId], references: [id])
   User          User?    @relation(fields: [userId], references: [id])
   Transactions  Transaction[]
+  Withdrawals   Withdrawal[]
 }
 
 model Transaction {
@@ -166,10 +168,38 @@ enum TransactionCategory {
   qr_purchase
   cashback_payout
   refund
+  withdrawal
 }
 
 enum TransactionStatus {
   pending
   success
   failed
+}
+
+model PayoutMethod {
+  id          String       @id @default(uuid())
+  userId      String
+  User        User         @relation(fields: [userId], references: [id])
+  type        String       @default("upi") // "upi", "bank_account"
+  value       String       // The UPI ID or Account Number
+  details     Json?        // Extra details like IFSC if needed later
+  isPrimary   Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  Withdrawals Withdrawal[]
+}
+
+model Withdrawal {
+  id             String       @id @default(uuid())
+  walletId       String
+  Wallet         Wallet       @relation(fields: [walletId], references: [id])
+  amount         Decimal      @db.Decimal(12, 2)
+  status         String       @default("pending") // pending, processed, rejected
+  payoutMethodId String
+  PayoutMethod   PayoutMethod @relation(fields: [payoutMethodId], references: [id])
+  referenceId    String?      // Bank/UPI Ref ID
+  adminNote      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 }

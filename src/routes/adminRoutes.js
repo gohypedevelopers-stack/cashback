@@ -8,7 +8,8 @@ const {
     verifyBrand, verifyCampaign,
     getSystemStats, getAllUsers, updateUserStatus,
     getAllTransactions, getAllQRs,
-    verifyVendor, creditWallet, updateCampaignStatus, getVendorDetails
+    verifyVendor, creditWallet, updateCampaignStatus, getVendorDetails,
+    getPendingWithdrawals, processWithdrawal
 } = require('../controllers/adminController');
 
 // All routes are protected and restricted to Admin
@@ -44,6 +45,8 @@ router.put('/users/:id/status', updateUserStatus);
 
 // System Audit
 router.get('/transactions', getAllTransactions);
-router.get('/qrs', getAllQRs);
+// Payout Management
+router.get('/withdrawals', getPendingWithdrawals);
+router.put('/withdrawals/:id/process', processWithdrawal);
 
 module.exports = router;

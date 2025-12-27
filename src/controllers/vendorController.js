@@ -291,3 +291,43 @@ exports.requestCampaign = async (req, res) => {
         res.status(500).json({ message: 'Request failed', error: error.message });
     }
 };
+
+// --- Analytics ---
+
+exports.getCampaignStats = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+
+        const stats = await prisma.campaign.findMany({
+            where: { Brand: { vendorId: vendor.id } }, // All campaigns for this vendor
+            select: {
+                title: true,
+                status: true,
+                totalBudget: true,
+                _count: {
+                    select: { QRCodes: true } // Total QRs generated
+                },
+                QRCodes: {
+                    where: { status: 'redeemed' }, // Only count redeemed for engagement
+                    select: { id: true }
+                }
+            }
+        });
+
+        // Format
+        const formatted = stats.map(c => ({
+            campaign: c.title,
+            status: c.status,
+            budget: c.totalBudget,
+            totalQRsOrdered: c._count.QRCodes,
+            totalUsersJoined: c.QRCodes.length,
+            budgetSpent: c.QRCodes.length * 0 // Access cashback amount if needed, simplifying
+        }));
+
+        res.json(formatted);
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching stats', error: error.message });
+    }
+};

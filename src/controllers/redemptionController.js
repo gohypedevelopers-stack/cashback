@@ -28,26 +28,26 @@ exports.scanAndRedeem = async (req, res) => {
 
             const cashbackAmount = parseFloat(qr.Campaign.cashbackAmount);
 
-            // Find or Create User Wallet
+            // 1. Find User Wallet
             let wallet = await tx.wallet.findUnique({ where: { userId } });
             if (!wallet) {
-                wallet = await tx.wallet.create({
-                    data: {
-                        userId,
-                        balance: 0.00
-                    }
-                });
+                wallet = await tx.wallet.create({ data: { userId, balance: 0.00 } });
             }
 
-            // Credit Wallet
-            const updatedWallet = await tx.wallet.update({
-                where: { id: wallet.id },
-                data: {
-                    balance: { increment: cashbackAmount }
-                }
+            // 2. Check for Linked UPI (Payout Method)
+            const upiMethod = await tx.payoutMethod.findFirst({
+                where: { userId, type: 'upi', isPrimary: true }
             });
 
-            // Record Transaction
+            if (!upiMethod) {
+                throw new Error('Please link your UPI ID first to receive instant cashback');
+            }
+
+            // 3. Credit Wallet (Ledger Entry)
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { increment: cashbackAmount } }
+            });
             await tx.transaction.create({
                 data: {
                     walletId: wallet.id,
@@ -60,6 +60,28 @@ exports.scanAndRedeem = async (req, res) => {
                 }
             });
 
+            // 4. Auto-Debit (Instant Payout)
+            // In a real system, we would call Razorpay X / Cashfree here.
+            // If API fails, we would revert or leave balance in wallet.
+            // Here we assume "Real Time" success.
+
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { decrement: cashbackAmount } }
+            });
+
+            const payoutTx = await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'debit',
+                    amount: cashbackAmount,
+                    category: 'withdrawal',
+                    status: 'success', // Instantly Successful
+                    description: `Instant Payout to UPI: ${upiMethod.value}`,
+                    referenceId: `BANK_REF_${Date.now()}` // Mock Bank Ref
+                }
+            });
+
             // Update QR Status
             await tx.qRCode.update({
                 where: { id: qr.id },
@@ -67,22 +89,21 @@ exports.scanAndRedeem = async (req, res) => {
                     status: 'redeemed',
                     redeemedByUserId: userId,
                     redeemedAt: now,
-                    payoutTransactionId: `WALLET_${wallet.id}_${Date.now()}`
+                    payoutTransactionId: payoutTx.id
                 }
             });
 
             return {
                 amount: cashbackAmount,
-                newBalance: updatedWallet.balance,
+                payoutTo: upiMethod.value,
                 campaign: qr.Campaign
             };
         });
 
         res.json({
             success: true,
-            message: 'Cashback added to wallet successfully',
-            amount: result.amount,
-            newBalance: result.newBalance
+            message: `Cashback of ₹${result.amount} sent instantly to ${result.payoutTo}`,
+            amount: result.amount
         });
 
     } catch (error) {

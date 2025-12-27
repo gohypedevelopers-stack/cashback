@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
-const { getWalletBalance, rechargeWallet, orderQRs, getMyQRs, getDashboardStats, getVendorTransactions, getActiveCampaigns, updateVendorProfile, requestBrand, requestCampaign } = require('../controllers/vendorController');
+const { getWalletBalance, rechargeWallet, orderQRs, getMyQRs, getDashboardStats, getVendorTransactions, getActiveCampaigns, updateVendorProfile, requestBrand, requestCampaign, getCampaignStats } = require('../controllers/vendorController');
 
 router.use(protect);
 router.use(authorize('vendor'));
@@ -14,11 +14,12 @@ router.get('/qrs', getMyQRs);
 router.get('/dashboard', getDashboardStats);
 router.get('/transactions', getVendorTransactions);
 
-// Request Flows
+// Brand & Campaign Management
 router.post('/brands', requestBrand);
 router.post('/campaigns', requestCampaign);
 
 router.get('/campaigns', getActiveCampaigns);
+router.get('/campaigns/stats', getCampaignStats); // Re-adding Stats
 router.put('/profile', updateVendorProfile);
 
 module.exports = router;
