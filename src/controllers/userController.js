@@ -45,68 +45,8 @@ exports.getDashboard = async (req, res) => {
     }
 };
 
-exports.requestPayout = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { amount, upiId } = req.body;
-
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ message: 'Invalid payout amount' });
-        }
-
-        await prisma.$transaction(async (tx) => {
-            const user = await tx.user.findUnique({
-                where: { id: userId },
-                include: { Wallet: true }
-            });
-
-            if (!user) throw new Error('User not found');
-            const wallet = user.Wallet;
-
-            if (!wallet) throw new Error('Wallet not found');
-
-            const payoutAmount = parseFloat(amount);
-            const currentBalance = parseFloat(wallet.balance);
-
-            if (currentBalance < payoutAmount) {
-                throw new Error('Insufficient wallet balance');
-            }
-
-            // Deduct from Wallet
-            const updatedWallet = await tx.wallet.update({
-                where: { id: wallet.id },
-                data: {
-                    balance: { decrement: payoutAmount }
-                }
-            });
-
-            // Create Transaction Record
-            await tx.transaction.create({
-                data: {
-                    walletId: wallet.id,
-                    type: 'debit',
-                    amount: payoutAmount,
-                    category: 'cashback_payout',
-                    status: 'success', // Simulating instant success
-                    description: `Payout to UPI: ${upiId || 'N/A'}`
-                }
-            });
-
-            return updatedWallet;
-        });
-
-        res.json({
-            success: true,
-            message: 'Payout processed successfully',
-            amount: amount,
-            remainingBalance: (await prisma.wallet.findUnique({ where: { userId } })).balance
-        });
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: error.message || 'Payout failed' });
-    }
-};
+// requestPayout is deprecated and replaced by paymentController.requestWithdrawal
+// routed via /api/user/payout -> requestWithdrawal
 
 exports.getRedemptionHistory = async (req, res) => {
     try {
@@ -169,5 +109,211 @@ exports.updateUserProfile = async (req, res) => {
         res.json({ message: 'Profile updated', user });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+// --- New "More Flow" Features ---
+
+exports.getAvailableOffers = async (req, res) => {
+    try {
+        const { search, brandId } = req.query;
+
+        let whereClause = {
+            status: 'active',
+            endDate: { gt: new Date() }
+        };
+
+        if (brandId) {
+            whereClause.brandId = brandId;
+        }
+
+        if (search) {
+            whereClause.OR = [
+                { title: { contains: search, mode: 'insensitive' } },
+                { description: { contains: search, mode: 'insensitive' } }
+            ];
+        }
+
+        const offers = await prisma.campaign.findMany({
+            where: whereClause,
+            include: { Brand: true },
+            orderBy: { endDate: 'asc' }
+        });
+        res.json(offers);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching offers', error: error.message });
+    }
+};
+
+exports.getOfferDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const offer = await prisma.campaign.findUnique({
+            where: { id },
+            include: { Brand: true }
+        });
+        if (!offer) return res.status(404).json({ message: 'Offer not found' });
+        res.json(offer);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching offer details', error: error.message });
+    }
+};
+
+exports.getActiveBrands = async (req, res) => {
+    try {
+        const brands = await prisma.brand.findMany({
+            where: {
+                status: 'active',
+                Campaigns: {
+                    some: { status: 'active', endDate: { gt: new Date() } }
+                }
+            },
+            select: { id: true, name: true, logoUrl: true, website: true }
+        });
+        res.json(brands);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching brands', error: error.message });
+    }
+};
+
+exports.createSupportTicket = async (req, res) => {
+    try {
+        const { subject, message } = req.body;
+        const ticket = await prisma.supportTicket.create({
+            data: {
+                userId: req.user.id,
+                subject,
+                message,
+                status: 'open'
+            }
+        });
+        res.status(201).json({ message: 'Support ticket created', ticket });
+    } catch (error) {
+        res.status(500).json({ message: 'Ticket creation failed', error: error.message });
+    }
+};
+
+exports.getSupportTickets = async (req, res) => {
+    try {
+        const tickets = await prisma.supportTicket.findMany({
+            where: { userId: req.user.id },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(tickets);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching tickets', error: error.message });
+    }
+};
+
+exports.getNotifications = async (req, res) => {
+    try {
+        const notifications = await prisma.notification.findMany({
+            where: { userId: req.user.id },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(notifications);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching notifications', error: error.message });
+    }
+};
+
+exports.markNotificationRead = async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.notification.update({
+            where: { id },
+            data: { isRead: true }
+        });
+        res.json({ message: 'Notification marked as read' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error updating notification', error: error.message });
+    }
+};
+
+// --- Catalog & Home API ---
+
+exports.getHomeData = async (req, res) => {
+    try {
+        const brands = await prisma.brand.findMany({
+            where: { status: 'active' },
+            take: 6,
+            select: { id: true, name: true, logoUrl: true }
+        });
+
+        // Mocking Banners for now (could be dynamic in future)
+        const banners = [
+            { id: 1, title: "Join the Cashback Revolution", subtitle: "Scan & Earn Instantly", bg: "bg-teal-900", img: "https://via.placeholder.com/100" },
+            { id: 2, title: "Trusted Brands Only", subtitle: "100% Authentic Products", bg: "bg-blue-900", img: "https://via.placeholder.com/100" }
+        ];
+
+        // Featured Products (Latest 4)
+        const featuredProducts = await prisma.product.findMany({
+            where: { status: 'active' },
+            take: 4,
+            orderBy: { createdAt: 'desc' },
+            include: { Brand: true }
+        });
+
+        res.json({
+            banners,
+            brands,
+            featuredProducts,
+            stats: {
+                productsOwned: 0, // Placeholder
+                productsReported: 0 // Placeholder
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error loading home data', error: error.message });
+    }
+};
+
+exports.getCatalog = async (req, res) => {
+    try {
+        const { search, brandId, category } = req.query;
+        let whereClause = { status: 'active' };
+
+        if (search) {
+            whereClause.OR = [
+                { name: { contains: search, mode: 'insensitive' } },
+                { description: { contains: search, mode: 'insensitive' } }
+            ];
+        }
+        if (brandId) whereClause.brandId = brandId;
+        if (category) whereClause.category = category;
+
+        const products = await prisma.product.findMany({
+            where: whereClause,
+            include: { Brand: true }
+        });
+        res.json(products);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching catalog', error: error.message });
+    }
+};
+
+exports.getProductDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { Brand: true }
+        });
+
+        if (!product) return res.status(404).json({ message: 'Product not found' });
+
+        // Heuristic: Find active campaign for this brand to show available reward
+        const activeCampaign = await prisma.campaign.findFirst({
+            where: { brandId: product.brandId, status: 'active' },
+            orderBy: { cashbackAmount: 'desc' }
+        });
+
+        res.json({
+            ...product,
+            reward: activeCampaign ? `Up to ₹${activeCampaign.cashbackAmount}` : 'Check App',
+            scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching product', error: error.message });
     }
 };

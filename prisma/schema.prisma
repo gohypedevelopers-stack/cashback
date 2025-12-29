@@ -26,6 +26,8 @@ model User {
   Vendor      Vendor?
   Wallet      Wallet?
   PayoutMethods PayoutMethod[]
+  SupportTickets SupportTicket[]
+  Notifications  Notification[]
 }
 
 model Vendor {
@@ -57,6 +59,26 @@ model Brand {
   Vendor    Vendor?    @relation(fields: [vendorId], references: [id])
 
   Campaigns Campaign[]
+  Products  Product[]
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  brandId     String
+  name        String
+  variant     String?
+  category    String?
+  description String?
+  packSize    String?
+  warranty    String?
+  imageUrl    String?
+  bannerUrl   String?
+  
+  status      Status   @default(active)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  Brand       Brand    @relation(fields: [brandId], references: [id])
 }
 
 model Campaign {
@@ -202,4 +224,27 @@ model Withdrawal {
   adminNote      String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
+}
+
+model SupportTicket {
+  id          String   @id @default(uuid())
+  userId      String
+  User        User     @relation(fields: [userId], references: [id])
+  subject     String
+  message     String
+  status      String   @default("open") // open, resolved, closed
+  response    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  User      User     @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  type      String?  // system, transaction, alert
+  createdAt DateTime @default(now())
 }
