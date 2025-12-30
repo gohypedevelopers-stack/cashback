@@ -110,3 +110,46 @@ exports.getActiveBrands = async (req, res) => {
         res.status(500).json({ message: 'Error fetching brands', error: error.message });
     }
 };
+
+exports.getBrandDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const brand = await prisma.brand.findUnique({
+            where: { id },
+            include: {
+                Products: {
+                    where: { status: 'active' }
+                },
+                Vendor: {
+                    include: { User: { select: { email: true } } }
+                }
+            }
+        });
+
+        if (!brand) return res.status(404).json({ message: 'Brand not found' });
+
+        // Shape data for frontend
+        const brandData = {
+            id: brand.id,
+            name: brand.name,
+            logo: brand.logoUrl,
+            banner: brand.logoUrl, // Fallback as we don't have banner in schema
+            website: brand.website,
+            email: brand.Vendor?.User?.email || "contact@brand.com",
+            about: "Trusted Brand Partner of GoHype.", // Default
+            tags: ["Verified", "Premium"], // Default
+            products: brand.Products.map(p => ({
+                id: p.id,
+                name: p.name,
+                variant: p.variant,
+                image: p.imageUrl,
+                reward: "Check App", // Could fetch campaign if needed
+                category: p.category
+            }))
+        };
+
+        res.json(brandData);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching brand details', error: error.message });
+    }
+};

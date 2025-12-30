@@ -8,8 +8,9 @@ const {
     verifyBrand, verifyCampaign,
     getSystemStats, getAllUsers, updateUserStatus,
     getAllTransactions, getAllQRs,
-    verifyVendor, creditWallet, updateCampaignStatus, getVendorDetails,
-    getPendingWithdrawals, processWithdrawal
+    verifyVendor, creditWallet, updateCampaignStatus, getVendorDetails, deleteProduct,
+    getPendingWithdrawals, processWithdrawal,
+    getAllSupportTickets, replySupportTicket, sendNotification
 } = require('../controllers/adminController');
 
 // All routes are protected and restricted to Admin
@@ -29,6 +30,7 @@ router.post('/campaigns', createCampaign);
 router.get('/campaigns', getAllCampaigns);
 router.put('/campaigns/:id/verify', verifyCampaign);
 router.put('/campaigns/:id/status', updateCampaignStatus); // Force Status Update
+router.delete('/products/:id', deleteProduct); // Moderation: Force Delete Product
 
 // Vendor Management
 router.get('/vendors', getAllVendors);
@@ -48,5 +50,10 @@ router.get('/transactions', getAllTransactions);
 // Payout Management
 router.get('/withdrawals', getPendingWithdrawals);
 router.put('/withdrawals/:id/process', processWithdrawal);
+
+// Support & Notifications
+router.get('/support', getAllSupportTickets);
+router.put('/support/:id', replySupportTicket);
+router.post('/notifications', sendNotification);
 
 module.exports = router;

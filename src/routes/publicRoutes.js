@@ -5,7 +5,8 @@ const {
     getCatalog,
     getProductDetails,
     getCategories,
-    getActiveBrands
+    getActiveBrands,
+    getBrandDetails
 } = require('../controllers/publicController');
 const { verifyQR } = require('../controllers/redemptionController');
 
@@ -16,6 +17,7 @@ router.get('/products', getCatalog);       // Product Catalog / Gift Cards (filt
 router.get('/products/:id', getProductDetails); // Product Info
 router.get('/categories', getCategories);  // List Categories
 router.get('/brands', getActiveBrands);    // Brand List
+router.get('/brands/:id', getBrandDetails); // Brand Details
 router.get('/qrs/:hash', verifyQR);        // Check QR Validity (Public)
 
 module.exports = router;
