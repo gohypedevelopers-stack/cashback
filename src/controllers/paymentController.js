@@ -1,4 +1,6 @@
 const prisma = require('../config/prismaClient');
+const crypto = require('crypto');
+const razorpay = require('../config/razorpay');
 
 // --- Payout Methods (UPI) ---
 
@@ -172,5 +174,93 @@ exports.getWithdrawalHistory = async (req, res) => {
         res.json(history);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching history', error: error.message });
+    }
+};
+
+// --- Razorpay Integration ---
+
+exports.createOrder = async (req, res) => {
+    try {
+        const { amount, currency = "INR", receipt, notes } = req.body;
+
+        const options = {
+            amount: amount * 100, // Convert to smallest unit (paise)
+            currency,
+            receipt: receipt || `receipt_${Date.now()}`,
+            notes: notes || {}
+        };
+
+        const order = await razorpay.orders.create(options);
+        res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Something went wrong", error: error.message });
+    }
+};
+
+exports.verifyPayment = async (req, res) => {
+    try {
+        const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+        const userId = req.user.id;
+
+        const body = razorpay_order_id + "|" + razorpay_payment_id;
+        const expectedSignature = crypto
+            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+            .update(body.toString())
+            .digest('hex');
+
+        if (expectedSignature === razorpay_signature) {
+
+            // Fetch order to get exact amount (Secure)
+            const order = await razorpay.orders.fetch(razorpay_order_id);
+            const amountInRupees = order.amount / 100;
+
+            // Find Wallet
+            let wallet = await prisma.wallet.findUnique({ where: { userId } });
+            if (!wallet) {
+                const vendor = await prisma.vendor.findUnique({ where: { userId } });
+                if (vendor) {
+                    wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
+                }
+            }
+
+            if (!wallet) {
+                // Auto-create wallet if not exists
+                wallet = await prisma.wallet.create({
+                    data: {
+                        userId: userId,
+                        balance: 0,
+                        currency: 'INR'
+                    }
+                });
+            }
+
+            // Atomic Transaction
+            await prisma.$transaction(async (tx) => {
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: { balance: { increment: amountInRupees } }
+                });
+
+                await tx.transaction.create({
+                    data: {
+                        walletId: wallet.id,
+                        type: 'credit',
+                        amount: amountInRupees,
+                        category: 'recharge', // Ensure 'recharge' is in enum
+                        status: 'success',
+                        referenceId: razorpay_payment_id,
+                        description: `Razorpay Recharge`
+                    }
+                });
+            });
+
+            res.json({ message: "Payment verified successfully", success: true });
+        } else {
+            res.status(400).json({ message: "Invalid signature", success: false });
+        }
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal Server Error", error: error.message });
     }
 };

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware'); // Any authenticated user
-const { addPayoutMethod, getPayoutMethods, requestWithdrawal, getWithdrawalHistory } = require('../controllers/paymentController');
+const { addPayoutMethod, getPayoutMethods, requestWithdrawal, getWithdrawalHistory, createOrder, verifyPayment } = require('../controllers/paymentController');
 
 router.use(protect);
 
@@ -12,5 +12,9 @@ router.get('/methods', getPayoutMethods);
 // Withdrawals
 router.post('/withdraw', requestWithdrawal);
 router.get('/withdrawals', getWithdrawalHistory);
+
+// Razorpay (Recharge)
+router.post('/order', createOrder);
+router.post('/verify', verifyPayment);
 
 module.exports = router;

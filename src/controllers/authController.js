@@ -181,4 +181,12 @@ exports.verifyOtp = async (req, res) => {
     }
 };
 
+exports.forgotPassword = async (req, res) => {
+    res.status(501).json({ message: 'Not Implemented' });
+};
+
+exports.resetPassword = async (req, res) => {
+    res.status(501).json({ message: 'Not Implemented' });
+};
+
 
