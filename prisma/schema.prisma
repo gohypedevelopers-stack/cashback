@@ -28,6 +28,9 @@ model User {
   PayoutMethods PayoutMethod[]
   SupportTickets SupportTicket[]
   Notifications  Notification[]
+  avatarUrl      String?
+  resetPasswordToken String?
+  resetPasswordExpires DateTime?
 }
 
 model Vendor {

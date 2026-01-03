@@ -153,3 +153,31 @@ exports.getBrandDetails = async (req, res) => {
         res.status(500).json({ message: 'Error fetching brand details', error: error.message });
     }
 };
+
+exports.getFAQs = async (req, res) => {
+    // Mock Data for Frontend Dev
+    const faqs = [
+        { id: 1, question: "How does cashback work?", answer: "Scan the QR code on the product package and get instant cashback to your wallet." },
+        { id: 2, question: "How do I withdraw money?", answer: "Go to your Profile > Wallet and choose UPI or Bank Transfer." },
+        { id: 3, question: "Is there a daily limit?", answer: "Yes, you can scan up to 10 products per day." }
+    ];
+    res.json(faqs);
+};
+
+exports.getStaticPage = async (req, res) => {
+    const { slug } = req.params;
+
+    // Mock Content
+    const pages = {
+        'terms': { title: "Terms & Conditions", content: "These are the terms..." },
+        'privacy': { title: "Privacy Policy", content: "We respect your privacy..." },
+        'about': { title: "About Us", content: "We are the cashback revolution." }
+    };
+
+    const page = pages[slug];
+    if (page) {
+        res.json(page);
+    } else {
+        res.status(404).json({ message: 'Page not found' });
+    }
+};

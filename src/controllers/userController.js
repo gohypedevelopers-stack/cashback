@@ -1,4 +1,5 @@
 const prisma = require('../config/prismaClient');
+const bcrypt = require('bcryptjs');
 
 exports.getDashboard = async (req, res) => {
     try {
@@ -30,7 +31,10 @@ exports.getDashboard = async (req, res) => {
             user: {
                 id: user.id,
                 name: user.name,
-                phoneNumber: user.phoneNumber
+                email: user.email,
+                phoneNumber: user.phoneNumber,
+                role: user.role,
+                avatarUrl: user.avatarUrl
             },
             wallet: {
                 balance: wallet.balance,
@@ -109,6 +113,69 @@ exports.updateUserProfile = async (req, res) => {
         res.json({ message: 'Profile updated', user });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.uploadAvatar = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: 'No file uploaded' });
+        }
+
+        const avatarUrl = `/uploads/${req.file.filename}`;
+
+        const user = await prisma.user.update({
+            where: { id: req.user.id },
+            data: { avatarUrl }
+        });
+
+        res.json({ message: 'Avatar updated', avatarUrl, user });
+    } catch (error) {
+        res.status(500).json({ message: 'Avatar upload failed', error: error.message });
+    }
+};
+
+exports.changePassword = async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+        const userId = req.user.id;
+
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+
+        if (!user || !(await bcrypt.compare(oldPassword, user.password))) {
+            return res.status(400).json({ message: 'Invalid old password' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        await prisma.user.update({
+            where: { id: userId },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error changing password', error: error.message });
+    }
+};
+
+exports.deleteAccount = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Soft delete: changing status to inactive/blocked
+        // We might also want to clear sensitive info? 
+        // For now, just disabling access.
+
+        await prisma.user.update({
+            where: { id: userId },
+            data: { status: 'inactive' } // or 'blocked', schema has 'inactive'
+        });
+
+        res.json({ message: 'Account deactivated successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error deleting account', error: error.message });
     }
 };
 

@@ -44,6 +44,29 @@ exports.getPayoutMethods = async (req, res) => {
     }
 };
 
+exports.deletePayoutMethod = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const method = await prisma.payoutMethod.findUnique({ where: { id } });
+
+        if (!method) {
+            return res.status(404).json({ message: 'Method not found' });
+        }
+
+        if (method.userId !== userId) {
+            return res.status(401).json({ message: 'Not authorized to delete this method' });
+        }
+
+        await prisma.payoutMethod.delete({ where: { id } });
+        res.json({ message: 'Payout method deleted' });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error deleting method', error: error.message });
+    }
+};
+
 // --- Withdrawals ---
 
 exports.requestWithdrawal = async (req, res) => {
