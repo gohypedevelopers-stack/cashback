@@ -8,7 +8,9 @@ const {
     getActiveBrands,
     getBrandDetails,
     getFAQs,
-    getStaticPage
+    getStaticPage,
+    getPublicCoupons,
+    getCouponDetails
 } = require('../controllers/publicController');
 const { verifyQR } = require('../controllers/redemptionController');
 
@@ -23,5 +25,9 @@ router.get('/brands/:id', getBrandDetails); // Brand Details
 router.get('/qrs/:hash', verifyQR);        // Check QR Validity (Public)
 router.get('/faqs', getFAQs);              // Common Questions
 router.get('/content/:slug', getStaticPage); // Static Pages (terms, privacy)
+
+// New Coupon Routes
+router.get('/coupons', getPublicCoupons);
+router.get('/coupons/:id', getCouponDetails);
 
 module.exports = router;
