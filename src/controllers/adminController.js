@@ -89,7 +89,20 @@ exports.verifyCampaign = async (req, res) => {
 
 exports.getAllBrands = async (req, res) => {
     try {
-        const brands = await prisma.brand.findMany();
+        const { type } = req.query; // 'admin' or 'vendor'
+        const where = {};
+
+        if (type === 'admin') {
+            where.vendorId = null;
+        } else if (type === 'vendor') {
+            where.vendorId = { not: null };
+        }
+
+        const brands = await prisma.brand.findMany({
+            where,
+            include: { Vendor: { select: { businessName: true } } },
+            orderBy: { createdAt: 'desc' }
+        });
         res.json(brands);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brands', error: error.message });
@@ -125,7 +138,20 @@ exports.createCampaign = async (req, res) => {
 
 exports.getAllCampaigns = async (req, res) => {
     try {
-        const campaigns = await prisma.campaign.findMany({ include: { Brand: true } });
+        const { type } = req.query; // 'admin' or 'vendor'
+        const where = {};
+
+        if (type === 'admin') {
+            where.Brand = { vendorId: null };
+        } else if (type === 'vendor') {
+            where.Brand = { vendorId: { not: null } };
+        }
+
+        const campaigns = await prisma.campaign.findMany({
+            where,
+            include: { Brand: { include: { Vendor: { select: { businessName: true } } } } },
+            orderBy: { createdAt: 'desc' }
+        });
         res.json(campaigns);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching campaigns', error: error.message });
