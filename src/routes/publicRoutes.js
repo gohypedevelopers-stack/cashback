@@ -8,7 +8,11 @@ const {
     getActiveBrands,
     getBrandDetails,
     getFAQs,
-    getStaticPage
+    getStaticPage,
+    getGiftCardCategories,
+    getGiftCards,
+    getGiftCardDetails,
+    getStoreData
 } = require('../controllers/publicController');
 const { verifyQR } = require('../controllers/redemptionController');
 
@@ -21,6 +25,10 @@ router.get('/categories', getCategories);  // List Categories
 router.get('/brands', getActiveBrands);    // Brand List
 router.get('/brands/:id', getBrandDetails); // Brand Details
 router.get('/qrs/:hash', verifyQR);        // Check QR Validity (Public)
+router.get('/giftcards', getGiftCards);
+router.get('/giftcards/categories', getGiftCardCategories);
+router.get('/giftcards/:id', getGiftCardDetails);
+router.get('/store', getStoreData);
 router.get('/faqs', getFAQs);              // Common Questions
 router.get('/content/:slug', getStaticPage); // Static Pages (terms, privacy)
 

@@ -1,5 +1,8 @@
 ﻿const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const { parsePagination } = require('../utils/pagination');
+const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
 
 // Helper to generate unique hash
 const generateQRHash = () => {
@@ -14,11 +17,13 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
         const user = await tx.user.findUnique({ where: { id: userId } });
         if (!user) throw new Error('User not found');
 
+        const businessName = user.name || user.username || 'My Company';
+
         vendor = await tx.vendor.create({
             data: {
                 userId,
-                name: user.name,
-                email: user.email,
+                businessName,
+                contactEmail: user.email || null,
                 status: 'active'
             }
         });
@@ -37,6 +42,54 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
     return { vendor, wallet };
 };
 
+const notifyAdminsAboutPaidOrder = async ({ order, vendor, campaignTitle = 'campaign' }) => {
+    if (!order) return;
+
+    try {
+        const admins = await prisma.user.findMany({
+            where: { role: 'admin' },
+            select: { id: true }
+        });
+
+        if (!admins.length) return;
+
+        const vendorLabel =
+            vendor?.businessName ||
+            vendor?.contactEmail ||
+            vendor?.contactPhone ||
+            vendor?.User?.name ||
+            'Vendor';
+        const shortOrderId = order.id ? order.id.slice(-6) : 'order';
+        const title = `QR order paid (${vendorLabel})`;
+        const message = `${vendorLabel} paid for QR order #${shortOrderId} (${order.quantity || 0} QRs for ${campaignTitle}). Please prepare the PDF.`;
+
+        const metadata = {
+            orderId: order.id,
+            vendorId: vendor?.id,
+            vendorLabel,
+            campaignTitle,
+            quantity: order.quantity,
+            totalAmount: Number(order.totalAmount) || 0,
+            status: order.status,
+        };
+
+        const notifications = admins.map((admin) => ({
+            userId: admin.id,
+            title,
+            message,
+            type: 'admin-order',
+            metadata
+        }));
+
+        await prisma.notification.createMany({
+            data: notifications,
+            skipDuplicates: true
+        });
+    } catch (error) {
+        console.error('Failed to notify admins about paid order', error);
+    }
+};
+
 exports.getWalletBalance = async (req, res) => {
     try {
         const { wallet } = await ensureVendorAndWallet(req.user.id);
@@ -50,8 +103,8 @@ exports.rechargeWallet = async (req, res) => {
     try {
         const { amount } = req.body; // In real app, this comes from Payment Gateway callback
 
-        await prisma.$transaction(async (tx) => {
-            const { wallet } = await ensureVendorAndWallet(req.user.id, tx);
+        const { vendorId } = await prisma.$transaction(async (tx) => {
+            const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
 
             // Update Wallet
             const updatedWallet = await tx.wallet.update({
@@ -71,9 +124,16 @@ exports.rechargeWallet = async (req, res) => {
                 }
             });
 
-            return updatedWallet;
+            return { vendorId: vendor.id };
         });
 
+        safeLogVendorActivity({
+            vendorId,
+            action: 'wallet_recharge',
+            entityType: 'wallet',
+            metadata: { amount: Number(amount) || 0 },
+            req
+        });
         res.json({ message: 'Wallet recharged successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Recharge failed', error: error.message });
@@ -93,7 +153,12 @@ exports.orderQRs = async (req, res) => {
             return res.status(400).json({ message: 'Invalid quantity' });
         }
 
-        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: {
+                Brand: { select: { qrPricePerUnit: true } }
+            }
+        });
         if (!campaign) {
             return res.status(404).json({ message: 'Campaign not found' });
         }
@@ -111,11 +176,16 @@ exports.orderQRs = async (req, res) => {
             return res.status(400).json({ message: 'Invalid cashback amount' });
         }
 
-        const count = await prisma.$transaction(async (tx) => {
+        const result = await prisma.$transaction(async (tx) => {
             const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
 
+            const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
+            const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
+
             // Use the cashbackAmount from the request (per-QR amount)
-            const totalCost = qrCashback * parsedQuantity;
+            const totalCashbackCost = qrCashback * parsedQuantity;
+            const totalPrintCost = printCostPerQr * parsedQuantity;
+            const totalCost = totalCashbackCost + totalPrintCost;
 
             if (parseFloat(wallet.balance) < totalCost) {
                 throw new Error('Insufficient wallet balance');
@@ -127,6 +197,18 @@ exports.orderQRs = async (req, res) => {
                 data: { balance: { decrement: totalCost } }
             });
 
+            const order = await tx.qROrder.create({
+                data: {
+                    vendorId: vendor.id,
+                    campaignId,
+                    quantity: parsedQuantity,
+                    cashbackAmount: qrCashback,
+                    printCost: printCostPerQr,
+                    totalAmount: totalPrintCost,
+                    status: 'paid'
+                }
+            });
+
             // Log Transaction
             await tx.transaction.create({
                 data: {
@@ -135,7 +217,8 @@ exports.orderQRs = async (req, res) => {
                     amount: totalCost,
                     category: 'qr_purchase',
                     status: 'success',
-                    description: `Purchased ${parsedQuantity} QRs (â‚¹${qrCashback} each) for Campaign ${campaign.title}`
+                    description: `Purchased ${parsedQuantity} QRs (INR ${qrCashback} cashback + INR ${printCostPerQr} print per QR) for Campaign ${campaign.title}`,
+                    referenceId: order.id
                 }
             });
 
@@ -145,6 +228,7 @@ exports.orderQRs = async (req, res) => {
                 qrData.push({
                     campaignId,
                     vendorId: vendor.id,
+                    orderId: order.id,
                     uniqueHash: generateQRHash(),
                     cashbackAmount: qrCashback,
                     status: 'generated'
@@ -153,10 +237,55 @@ exports.orderQRs = async (req, res) => {
 
             await tx.qRCode.createMany({ data: qrData });
 
-            return qrData;
+            return { qrs: qrData, order, vendorId: vendor.id };
         });
 
-        res.status(201).json({ message: 'QRs generated successfully', count: count.length, qrs: count });
+        const orderSummary = result?.order
+            ? {
+                id: result.order.id,
+                campaignId: result.order.campaignId,
+                campaignTitle: campaign.title,
+                quantity: result.order.quantity,
+                cashbackAmount: Number(result.order.cashbackAmount),
+                printCost: Number(result.order.printCost),
+                totalAmount: Number(result.order.totalAmount),
+                status: result.order.status
+            }
+            : null;
+
+        res.status(201).json({
+            message: 'QRs generated successfully',
+            count: result.qrs.length,
+            qrs: result.qrs,
+            order: orderSummary
+        });
+
+        safeLogVendorActivity({
+            vendorId: result.vendorId,
+            action: 'qr_order',
+            entityType: 'campaign',
+            entityId: campaignId,
+            metadata: {
+                orderId: result.order?.id,
+                quantity: parsedQuantity,
+                cashbackAmount: qrCashback,
+                totalCost,
+                totalPrintCost
+            },
+            req
+        });
+
+        const vendorProfile = await prisma.vendor.findUnique({
+            where: { id: result.vendorId },
+            include: {
+                User: { select: { id: true, name: true, email: true } }
+            }
+        });
+        await notifyAdminsAboutPaidOrder({
+            order: result.order,
+            vendor: vendorProfile,
+            campaignTitle: campaign.title
+        });
     } catch (error) {
         res.status(500).json({ message: 'Order failed', error: error.message });
     }
@@ -167,24 +296,56 @@ exports.getMyQRs = async (req, res) => {
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
 
-        const qrs = await prisma.qRCode.findMany({
-            where: { vendorId: vendor.id },
-            include: { Campaign: true },
-            orderBy: { createdAt: 'desc' } // Latest QRs first
-        });
+        const { page, limit, skip } = parsePagination(req, { defaultLimit: 80, maxLimit: 200 });
 
-        // Convert Prisma Decimal to plain numbers for JSON serialization
+        const [qrs, total, statusGroups] = await Promise.all([
+            prisma.qRCode.findMany({
+                where: { vendorId: vendor.id },
+                include: {
+                    Campaign: {
+                        select: {
+                            id: true,
+                            title: true,
+                            cashbackAmount: true,
+                            endDate: true,
+                            status: true
+                        }
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit
+            }),
+            prisma.qRCode.count({ where: { vendorId: vendor.id } }),
+            prisma.qRCode.groupBy({
+                by: ['status'],
+                where: { vendorId: vendor.id },
+                _count: { _all: true }
+            })
+        ]);
+
+        const statusCounts = statusGroups.reduce((acc, row) => {
+            const key = String(row.status || 'unknown').toLowerCase();
+            acc[key] = row._count._all;
+            return acc;
+        }, {});
+
         const formattedQrs = qrs.map(qr => ({
             ...qr,
-            cashbackAmount: qr.cashbackAmount ? Number(qr.cashbackAmount) : 0, // Per-QR cashback
+            cashbackAmount: qr.cashbackAmount ? Number(qr.cashbackAmount) : 0,
             Campaign: qr.Campaign ? {
                 ...qr.Campaign,
-                cashbackAmount: qr.Campaign.cashbackAmount ? Number(qr.Campaign.cashbackAmount) : 0,
-                totalBudget: qr.Campaign.totalBudget ? Number(qr.Campaign.totalBudget) : null
+                cashbackAmount: qr.Campaign.cashbackAmount ? Number(qr.Campaign.cashbackAmount) : 0
             } : null
         }));
 
-        res.json(formattedQrs);
+        res.json({
+            items: formattedQrs,
+            total,
+            page,
+            pages: total ? Math.ceil(total / limit) : 0,
+            statusCounts
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching QRs', error: error.message });
     }
@@ -248,6 +409,20 @@ exports.deleteQrBatch = async (req, res) => {
 
         const deleted = await prisma.qRCode.deleteMany({ where: deleteWhere });
         const skipped = totalCount - deleted.count;
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'qr_batch_delete',
+            entityType: 'campaign',
+            entityId: campaignId,
+            metadata: {
+                cashbackAmount: normalizedCashback,
+                total: totalCount,
+                deleted: deleted.count,
+                skipped
+            },
+            req
+        });
 
         res.json({
             message: `Deleted ${deleted.count} QRs from batch`,
@@ -444,9 +619,125 @@ exports.updateVendorProfile = async (req, res) => {
             });
         }
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'vendor_profile_update',
+            entityType: 'vendor',
+            entityId: vendor.id,
+            metadata: {
+                businessName,
+                contactPhone,
+                gstin,
+                address
+            },
+            req
+        });
+
         res.json({ message: 'Profile updated successfully', vendor });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.requestCredentialUpdate = async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
+        const trimmedUsername = typeof username === 'string' ? username.trim() : '';
+        const hasUsername = trimmedUsername.length > 0;
+        const hasPassword = typeof password === 'string' && password.length > 0;
+
+        if (!hasUsername && !hasPassword) {
+            return res.status(400).json({ message: 'Provide a username or password to request an update' });
+        }
+
+        const vendor = await prisma.vendor.findUnique({
+            where: { userId: req.user.id },
+            include: { User: true, Brand: true }
+        });
+
+        if (!vendor || !vendor.User) {
+            return res.status(404).json({ message: 'Vendor profile not found' });
+        }
+
+        if (hasUsername) {
+            const existing = await prisma.user.findUnique({ where: { username: trimmedUsername } });
+            if (existing && existing.id !== vendor.User.id) {
+                return res.status(400).json({ message: 'Username already taken' });
+            }
+        }
+
+        const updatePayload = {};
+        if (hasUsername) updatePayload.requestedUsername = trimmedUsername;
+        if (hasPassword) updatePayload.requestedPassword = await bcrypt.hash(password, 10);
+
+        if (!Object.keys(updatePayload).length) {
+            return res.status(400).json({ message: 'No credential updates provided' });
+        }
+
+        let request = await prisma.credentialRequest.findFirst({
+            where: { vendorId: vendor.id, status: 'pending' },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        if (request) {
+            request = await prisma.credentialRequest.update({
+                where: { id: request.id },
+                data: updatePayload
+            });
+        } else {
+            request = await prisma.credentialRequest.create({
+                data: {
+                    vendorId: vendor.id,
+                    userId: vendor.User.id,
+                    ...updatePayload
+                }
+            });
+        }
+
+        const admins = await prisma.user.findMany({
+            where: { role: 'admin' },
+            select: { id: true }
+        });
+
+        if (admins.length) {
+            const vendorLabel =
+                vendor.businessName ||
+                vendor.contactEmail ||
+                vendor.User.email ||
+                'Vendor';
+            const notifications = admins.map((admin) => ({
+                userId: admin.id,
+                title: `Credential update request (${vendorLabel})`,
+                message: `${vendorLabel} requested to update login credentials.`,
+                type: 'credential-request',
+                metadata: {
+                    requestId: request.id,
+                    vendorId: vendor.id,
+                    brandId: vendor.Brand?.id || null,
+                    vendorLabel,
+                    requestedUsername: request.requestedUsername || null,
+                    status: request.status
+                }
+            }));
+
+            await prisma.notification.createMany({ data: notifications });
+        }
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'credential_update_request',
+            entityType: 'user',
+            entityId: vendor.User.id,
+            metadata: {
+                requestedUsername: request.requestedUsername || null,
+                hasPassword: Boolean(request.requestedPassword)
+            },
+            req
+        });
+
+        res.status(201).json({ message: 'Credential update request submitted', requestId: request.id });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to request credential update', error: error.message });
     }
 };
 
@@ -474,6 +765,26 @@ exports.requestCampaign = async (req, res) => {
             return res.status(400).json({ message: 'Brand is not active' });
         }
 
+        const allocationRows = Array.isArray(allocations) ? allocations : [];
+        const derivedSubtotal = allocationRows.reduce((sum, alloc) => {
+            const quantity = parseInt(alloc?.quantity, 10) || 0;
+            const cashback = parseFloat(alloc?.cashbackAmount);
+            const rowTotal = parseFloat(alloc?.totalBudget);
+            if (Number.isFinite(rowTotal) && rowTotal >= 0) {
+                return sum + rowTotal;
+            }
+            if (Number.isFinite(cashback) && cashback > 0 && quantity > 0) {
+                return sum + cashback * quantity;
+            }
+            return sum;
+        }, 0);
+        const normalizedTotalBudget = Number.isFinite(parseFloat(totalBudget))
+            ? parseFloat(totalBudget)
+            : derivedSubtotal;
+        const normalizedSubtotal = Number.isFinite(parseFloat(subtotal))
+            ? parseFloat(subtotal)
+            : derivedSubtotal;
+
         const campaign = await prisma.campaign.create({
             data: {
                 brandId,
@@ -482,11 +793,25 @@ exports.requestCampaign = async (req, res) => {
                 cashbackAmount,
                 startDate: new Date(startDate),
                 endDate: new Date(endDate),
-                totalBudget,
-                subtotal,
+                totalBudget: normalizedTotalBudget,
+                subtotal: normalizedSubtotal,
                 allocations,
                 status: 'pending'
             }
+        });
+        safeLogVendorActivity({
+            vendorId: brand.vendorId,
+            action: 'campaign_create',
+            entityType: 'campaign',
+            entityId: campaign.id,
+            metadata: {
+                brandId,
+                title,
+                totalBudget: normalizedTotalBudget,
+                subtotal: normalizedSubtotal,
+                allocationsCount: allocationRows.length
+            },
+            req
         });
         res.status(201).json({ message: 'Campaign created successfully', campaign });
     } catch (error) {
@@ -526,6 +851,20 @@ exports.updateCampaign = async (req, res) => {
                 totalBudget
             }
         });
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'campaign_update',
+            entityType: 'campaign',
+            entityId: id,
+            metadata: {
+                title,
+                cashbackAmount,
+                startDate,
+                endDate,
+                totalBudget
+            },
+            req
+        });
         res.json({ message: 'Campaign updated', campaign: updatedCampaign });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
@@ -558,6 +897,14 @@ exports.addProduct = async (req, res) => {
             }
         });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'product_create',
+            entityType: 'product',
+            entityId: product.id,
+            metadata: { brandId, name, category },
+            req
+        });
         res.status(201).json({ message: 'Product added', product });
     } catch (error) {
         res.status(500).json({ message: 'Error adding product', error: error.message });
@@ -611,6 +958,17 @@ exports.importProducts = async (req, res) => {
             skipDuplicates: true
         });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'product_import',
+            entityType: 'brand',
+            entityId: brandId,
+            metadata: {
+                requested: products.length,
+                imported: result.count
+            },
+            req
+        });
         res.status(201).json({
             message: `${result.count} products imported`,
             count: result.count
@@ -661,6 +1019,14 @@ exports.updateProduct = async (req, res) => {
             }
         });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'product_update',
+            entityType: 'product',
+            entityId: id,
+            metadata: { name, category, status },
+            req
+        });
         res.json({ message: 'Product updated', product: updated });
     } catch (error) {
         res.status(500).json({ message: 'Error updating product', error: error.message });
@@ -689,6 +1055,14 @@ exports.deleteProduct = async (req, res) => {
 
         await prisma.product.delete({ where: { id } });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'product_delete',
+            entityType: 'product',
+            entityId: id,
+            metadata: { name: product.name },
+            req
+        });
         res.json({ message: 'Product deleted' });
     } catch (error) {
         res.status(500).json({ message: 'Error deleting product', error: error.message });
@@ -760,6 +1134,14 @@ exports.updateCampaignStatus = async (req, res) => {
             where: { id },
             data: { status }
         });
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'campaign_status_update',
+            entityType: 'campaign',
+            entityId: id,
+            metadata: { status },
+            req
+        });
         res.json({ message: `Campaign ${status}`, campaign: updated });
 
     } catch (error) {
@@ -773,26 +1155,10 @@ exports.deleteBrand = async (_req, res) => {
     });
 };
 
-exports.deleteCampaign = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-
-        const campaign = await prisma.campaign.findFirst({
-            where: { id, Brand: { vendorId: vendor.id } }
-        });
-
-        if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
-
-        await prisma.$transaction(async (tx) => {
-            await tx.qRCode.deleteMany({ where: { campaignId: id } });
-            await tx.campaign.delete({ where: { id } });
-        });
-        res.json({ message: 'Campaign deleted' });
-
-    } catch (error) {
-        res.status(500).json({ message: 'Delete failed', error: error.message });
-    }
+exports.deleteCampaign = async (_req, res) => {
+    res.status(403).json({
+        message: 'Campaign deletion is restricted to administrators'
+    });
 };
 
 // --- QR Order Management ---
@@ -802,17 +1168,32 @@ exports.getVendorOrders = async (req, res) => {
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
 
-        const orders = await prisma.qROrder.findMany({
-            where: { vendorId: vendor.id },
-            include: {
-                QRCodes: {
-                    select: { id: true, status: true, uniqueHash: true }
-                }
-            },
-            orderBy: { createdAt: 'desc' }
-        });
+        const { page, limit, skip } = parsePagination(req, { defaultLimit: 20, maxLimit: 100 });
 
-        // Get campaign titles
+        const [orders, total, statusGroups] = await Promise.all([
+            prisma.qROrder.findMany({
+                where: { vendorId: vendor.id },
+                include: {
+                    _count: { select: { QRCodes: true } }
+                },
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit
+            }),
+            prisma.qROrder.count({ where: { vendorId: vendor.id } }),
+            prisma.qROrder.groupBy({
+                by: ['status'],
+                where: { vendorId: vendor.id },
+                _count: { _all: true }
+            })
+        ]);
+
+        const statusCounts = statusGroups.reduce((acc, row) => {
+            const key = String(row.status || 'unknown').toLowerCase();
+            acc[key] = row._count._all;
+            return acc;
+        }, {});
+
         const campaignIds = [...new Set(orders.map(o => o.campaignId))];
         const campaigns = await prisma.campaign.findMany({
             where: { id: { in: campaignIds } },
@@ -830,10 +1211,16 @@ exports.getVendorOrders = async (req, res) => {
             totalAmount: Number(order.totalAmount),
             status: order.status,
             createdAt: order.createdAt,
-            qrCount: order.QRCodes.length
+            qrCount: order._count?.QRCodes || 0
         }));
 
-        res.json(formattedOrders);
+        res.json({
+            items: formattedOrders,
+            total,
+            page,
+            pages: total ? Math.ceil(total / limit) : 0,
+            statusCounts
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching orders', error: error.message });
     }
@@ -852,7 +1239,12 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ message: 'Invalid quantity' });
         }
 
-        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: {
+                Brand: { select: { qrPricePerUnit: true } }
+            }
+        });
         if (!campaign) {
             return res.status(404).json({ message: 'Campaign not found' });
         }
@@ -868,7 +1260,8 @@ exports.createOrder = async (req, res) => {
         }
 
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const printCostPerQr = 1.0; // â‚¹1 per QR
+        const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
+        const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
         const totalPrintCost = printCostPerQr * parsedQuantity;
 
         // Create order (status: pending)
@@ -884,6 +1277,19 @@ exports.createOrder = async (req, res) => {
             }
         });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'qr_order_create',
+            entityType: 'campaign',
+            entityId: campaignId,
+            metadata: {
+                orderId: order.id,
+                quantity: parsedQuantity,
+                cashbackAmount: qrCashback,
+                totalAmount: totalPrintCost
+            },
+            req
+        });
         res.status(201).json({
             message: 'Order created. Please pay to confirm.',
             order: {
@@ -949,7 +1355,8 @@ exports.payOrder = async (req, res) => {
                     amount: totalDeduction,
                     category: 'qr_purchase',
                     status: 'success',
-                    description: `QR Order #${order.id.slice(-6)} - ${order.quantity} QRs (â‚¹${Number(order.cashbackAmount)} cashback + â‚¹${printCost} print)`
+                    description: `QR Order #${order.id.slice(-6)} - ${order.quantity} QRs (INR ${Number(order.cashbackAmount)} cashback + INR ${printCost} print)`,
+                    referenceId: order.id
                 }
             });
 
@@ -974,6 +1381,16 @@ exports.payOrder = async (req, res) => {
             });
         });
 
+        order.status = 'paid';
+
+        const campaignTitle = campaign?.title || 'Campaign';
+
+        await notifyAdminsAboutPaidOrder({
+            order,
+            vendor,
+            campaignTitle
+        });
+
         res.json({
             message: 'Payment successful. Admin will ship QR codes.',
             order: {
@@ -982,6 +1399,19 @@ exports.payOrder = async (req, res) => {
                 quantity: order.quantity,
                 totalPaid: totalDeduction
             }
+        });
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'qr_order_pay',
+            entityType: 'order',
+            entityId: order.id,
+            metadata: {
+                campaignId: order.campaignId,
+                quantity: order.quantity,
+                totalPaid: totalDeduction
+            },
+            req
         });
     } catch (error) {
         res.status(500).json({ message: 'Payment failed', error: error.message });
@@ -995,21 +1425,27 @@ exports.payCampaign = async (req, res) => {
         const { id } = req.params;
         const { vendor, wallet } = await ensureVendorAndWallet(req.user.id);
 
-        const campaign = await prisma.campaign.findUnique({ where: { id } });
+        const campaign = await prisma.campaign.findUnique({
+            where: { id },
+            include: { Brand: { select: { qrPricePerUnit: true } } }
+        });
         if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
 
         if (campaign.status === 'active') return res.status(400).json({ message: 'Campaign is already active' });
 
         // Calculate Cost: Cashback Budget + Print Cost
-        // Print Cost = Total Quantity * 1
+        // Print Cost = Total Quantity * negotiated QR price
         const allocations = campaign.allocations || []; // allocations is JSON
 
         // Ensure allocations is an array
         const allocArray = Array.isArray(allocations) ? allocations : [];
         const totalQty = allocArray.reduce((sum, a) => sum + (parseInt(a.quantity) || 0), 0);
-        const printCost = totalQty * 1;
+        const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
+        const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
+        const printCost = totalQty * printCostPerQr;
 
-        const totalCost = Number(campaign.totalBudget) + printCost;
+        const baseBudget = Number(campaign.subtotal ?? campaign.totalBudget ?? 0);
+        const totalCost = baseBudget + printCost;
 
         if (parseFloat(wallet.balance) < totalCost) {
             return res.status(400).json({
@@ -1034,7 +1470,8 @@ exports.payCampaign = async (req, res) => {
                     amount: totalCost,
                     category: 'campaign_payment',
                     status: 'success',
-                    description: `Payment for Campaign: ${campaign.title} (Cashback: ${campaign.totalBudget} + Print: ${printCost})`
+                    description: `Payment for Campaign: ${campaign.title} (Cashback: ${campaign.totalBudget} + Print: ${printCost})`,
+                    referenceId: campaign.id
                 }
             });
 
@@ -1045,6 +1482,19 @@ exports.payCampaign = async (req, res) => {
             });
         });
 
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'campaign_pay',
+            entityType: 'campaign',
+            entityId: id,
+            metadata: {
+                totalCost,
+                totalQty,
+                printCost,
+                baseBudget
+            },
+            req
+        });
         res.json({ message: 'Campaign payment successful. Campaign is now active.' });
 
     } catch (error) {

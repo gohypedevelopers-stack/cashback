@@ -3,6 +3,8 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { isSubscriptionActive } = require('../utils/subscriptionUtils');
+const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
+const { safeLogActivity } = require('../utils/activityLogger');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -105,6 +107,16 @@ exports.login = async (req, res) => {
                 });
             }
 
+            const vendorStatus = String(vendor.status || '').toLowerCase();
+            if (vendorStatus !== 'active') {
+                return res.status(403).json({ message: `Vendor account is ${vendorStatus}. Please contact admin.` });
+            }
+
+            const brandStatus = String(vendor.Brand?.status || '').toLowerCase();
+            if (brandStatus && brandStatus !== 'active') {
+                return res.status(403).json({ message: `Brand status is ${brandStatus}. Please contact admin.` });
+            }
+
             if (!isSubscriptionActive(Subscription)) {
                 return res.status(403).json({ message: 'Vendor subscription is not active' });
             }
@@ -114,6 +126,15 @@ exports.login = async (req, res) => {
                 brand: vendor.Brand,
                 subscription: Subscription
             };
+
+            safeLogVendorActivity({
+                vendorId: vendor.id,
+                action: 'vendor_login',
+                entityType: 'vendor',
+                entityId: vendor.id,
+                metadata: { identifier: email || username },
+                req
+            });
         }
 
         res.json({
@@ -124,6 +145,20 @@ exports.login = async (req, res) => {
             role: user.role,
             token: generateToken(user.id, user.role),
             vendor: vendorDetails
+        });
+
+        safeLogActivity({
+            actorUserId: user.id,
+            actorRole: user.role,
+            vendorId: vendorDetails?.vendorId,
+            brandId: vendorDetails?.brand?.id,
+            action: 'login',
+            entityType: 'user',
+            entityId: user.id,
+            metadata: {
+                identifier: email || username
+            },
+            req
         });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -138,6 +173,18 @@ exports.getMe = async (req, res) => {
 
         if (user) {
             const { password, otp, otpExpires, ...userWithoutSensitive } = user;
+            if (user.role === 'vendor') {
+                const vendor = await prisma.vendor.findUnique({ where: { userId: user.id } });
+                if (vendor) {
+                    safeLogVendorActivity({
+                        vendorId: vendor.id,
+                        action: 'vendor_session_check',
+                        entityType: 'vendor',
+                        entityId: vendor.id,
+                        req
+                    });
+                }
+            }
             res.json(userWithoutSensitive);
         } else {
             res.status(404).json({ message: 'User not found' });

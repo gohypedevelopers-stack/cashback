@@ -1,4 +1,5 @@
 const prisma = require('../config/prismaClient');
+const { giftCardCategories, giftCards, storeTabs, storeCategories, vouchers, storeProducts } = require('../data/publicCatalog');
 
 // --- Home Data (Universal) ---
 exports.getHomeData = async (req, res) => {
@@ -162,6 +163,47 @@ exports.getBrandDetails = async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brand details', error: error.message });
     }
+};
+
+
+exports.getGiftCardCategories = (_req, res) => {
+    res.json(giftCardCategories);
+};
+
+exports.getGiftCards = (req, res) => {
+    const { categoryId, search } = req.query;
+    let filtered = giftCards;
+
+    if (categoryId) {
+        filtered = filtered.filter((card) => card.categoryId === categoryId);
+    }
+
+    if (search) {
+        const normalized = String(search).trim().toLowerCase();
+        filtered = filtered.filter((card) => card.name.toLowerCase().includes(normalized));
+    }
+
+    res.json(filtered);
+};
+
+exports.getGiftCardDetails = (req, res) => {
+    const { id } = req.params;
+    const card = giftCards.find((item) => item.id === id);
+
+    if (!card) {
+        return res.status(404).json({ message: 'Gift card not found' });
+    }
+
+    res.json(card);
+};
+
+exports.getStoreData = (_req, res) => {
+    res.json({
+        tabs: storeTabs,
+        categories: storeCategories,
+        vouchers,
+        products: storeProducts
+    });
 };
 
 exports.getFAQs = async (req, res) => {

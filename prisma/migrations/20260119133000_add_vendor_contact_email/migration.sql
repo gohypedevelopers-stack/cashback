@@ -1,0 +1,1 @@
+ALTER TABLE "Vendor" ADD COLUMN IF NOT EXISTS "contactEmail" TEXT;

@@ -43,6 +43,16 @@ const requireActiveSubscription = async (req, res, next) => {
             });
         }
 
+        const vendorStatus = String(vendor.status || '').toLowerCase();
+        if (vendorStatus !== 'active') {
+            return res.status(403).json({ message: `Vendor account is ${vendorStatus}. Please contact admin.` });
+        }
+
+        const brandStatus = String(vendor.Brand?.status || '').toLowerCase();
+        if (brandStatus && brandStatus !== 'active') {
+            return res.status(403).json({ message: `Brand status is ${brandStatus}. Please contact admin.` });
+        }
+
         if (!isSubscriptionActive(Subscription)) {
             return res.status(403).json({ message: 'Subscription is not active; please contact admin' });
         }

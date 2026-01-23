@@ -13,6 +13,7 @@ const {
     getVendorCampaigns,
     getVendorProfile,
     updateVendorProfile,
+    requestCredentialUpdate,
     getVendorBrand,
     getVendorBrands,
     upsertVendorBrand,
@@ -60,6 +61,7 @@ router.get('/transactions', getVendorTransactions);
 // Vendor Profile
 router.get('/profile', getVendorProfile);
 router.put('/profile', updateVendorProfile);
+router.post('/credentials/request', requestCredentialUpdate);
 
 // Brand Management
 router.get('/brands', getVendorBrands);

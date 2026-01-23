@@ -1,4 +1,5 @@
 const prisma = require('../config/prismaClient');
+const { safeLogActivity } = require('../utils/activityLogger');
 
 exports.scanAndRedeem = async (req, res) => {
     try {
@@ -97,13 +98,33 @@ exports.scanAndRedeem = async (req, res) => {
                 amount: cashbackAmount,
                 payoutTo: upiMethod ? upiMethod.value : 'Wallet Balance',
                 campaign: qr.Campaign,
-                isWalletCredit: !upiMethod
+                isWalletCredit: !upiMethod,
+                qrId: qr.id,
+                vendorId: qr.vendorId,
+                campaignId: qr.campaignId,
+                brandId: qr.Campaign?.brandId
             };
+        });
+
+        safeLogActivity({
+            actorUserId: userId,
+            actorRole: req.user?.role,
+            vendorId: result.vendorId,
+            brandId: result.brandId,
+            campaignId: result.campaignId,
+            action: 'qr_redeem',
+            entityType: 'qr',
+            entityId: result.qrId,
+            metadata: {
+                amount: result.amount,
+                payoutTo: result.payoutTo
+            },
+            req
         });
 
         res.json({
             success: true,
-            message: `Cashback of ₹${result.amount} sent instantly to ${result.payoutTo}`,
+            message: `Cashback of INR ${result.amount} sent instantly to ${result.payoutTo}`,
             amount: result.amount
         });
 
