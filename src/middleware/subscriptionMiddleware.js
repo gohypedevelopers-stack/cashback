@@ -19,6 +19,7 @@ const requireActiveSubscription = async (req, res, next) => {
         });
 
         if (!vendor || !vendor.Brand || !vendor.Brand.Subscription) {
+            console.log(`[SubscriptionMiddleware] Blocking Access to ${req.originalUrl} - No Vendor/Brand/Subscription`);
             return res.status(403).json({ message: 'Vendor subscription is not configured yet' });
         }
 

@@ -70,7 +70,7 @@ model Brand {
 }
 
 model Product {
-  id          String   @id @default(uuid())
+  id          String     @id @default(uuid())
   brandId     String
   name        String
   variant     String?
@@ -80,15 +80,17 @@ model Product {
   warranty    String?
   imageUrl    String?
   bannerUrl   String?
-  status      Status   @default(active)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  Brand       Brand    @relation(fields: [brandId], references: [id])
+  status      Status     @default(active)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  Brand       Brand      @relation(fields: [brandId], references: [id])
+  Campaigns   Campaign[]
 }
 
 model Campaign {
   id              String         @id @default(uuid())
   brandId         String
+  productId       String?
   title           String
   description     String?
   cashbackAmount  Decimal?       @db.Decimal(10, 2)
@@ -103,6 +105,7 @@ model Campaign {
   subtotal        Decimal?       @db.Decimal(12, 2)
   ActivityLog     ActivityLog[]
   Brand           Brand          @relation(fields: [brandId], references: [id])
+  Product         Product?       @relation(fields: [productId], references: [id])
   QRCodes         QRCode[]
 }
 

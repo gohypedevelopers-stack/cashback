@@ -48,3 +48,4 @@ pnpm-debug.log*
 Thumbs.db
 
 /src/generated/prisma
+.vercel

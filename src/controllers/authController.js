@@ -371,4 +371,25 @@ exports.resetPassword = async (req, res) => {
     }
 };
 
+// Set Password for Logged-In User (who may not have a password yet)
+exports.setPassword = async (req, res) => {
+    const { password } = req.body;
 
+    if (!password || password.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        await prisma.user.update({
+            where: { id: req.user.id },
+            data: { password: hashedPassword }
+        });
+
+        res.json({ success: true, message: 'Password set successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error setting password', error: error.message });
+    }
+};

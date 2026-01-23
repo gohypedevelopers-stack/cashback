@@ -33,58 +33,71 @@ const {
     getVendorOrders,
     createOrder,
     payOrder,
-    payCampaign
+    payCampaign,
+    downloadOrderQrPdf,
+    downloadCampaignQrPdf
 } = require('../controllers/vendorController');
 
 router.use(protect);
 router.use(authorize('vendor'));
-router.use(requireActiveSubscription);
+// router.use(requireActiveSubscription); // REMOVED GLOBAL APPLY
 
-// Wallet
+// --- OPEN ROUTES (Onboarding & Account Management) ---
+
+// Wallet (Viewing & Recharging allowed without active subscription)
 router.get('/wallet', getWalletBalance);
 router.post('/wallet/recharge', rechargeWallet);
-
-// QR Codes
-router.post('/qrs/order', orderQRs);
-router.get('/qrs', getMyQRs);
-router.delete('/qrs/batch', deleteQrBatch);
-
-// QR Orders (with tracking)
-router.get('/orders', getVendorOrders);
-router.post('/orders', createOrder);
-router.post('/orders/:orderId/pay', payOrder);
-
-// Dashboard & Transactions
-router.get('/dashboard', getDashboardStats);
-router.get('/transactions', getVendorTransactions);
 
 // Vendor Profile
 router.get('/profile', getVendorProfile);
 router.put('/profile', updateVendorProfile);
 router.post('/credentials/request', requestCredentialUpdate);
 
-// Brand Management
+// Brand Management (Creation & Viewing allowed)
 router.get('/brands', getVendorBrands);
 router.get('/brand', getVendorBrand);
-router.post('/brand', upsertVendorBrand);
-router.post('/brands', requestBrand);
+router.post('/brand', upsertVendorBrand); // Admin only internally
+router.post('/brands', requestBrand); // <--- CRITICAL: Must be open
 router.put('/brands/:id', updateBrand);
 router.delete('/brands/:id', deleteBrand);
 
+// Dashboard (Basic stats allowed)
+router.get('/dashboard', getDashboardStats);
+router.get('/transactions', getVendorTransactions);
+
+// --- RESTRICTED ROUTES (Requires Active Subscription) ---
+const restrictedRouter = express.Router();
+restrictedRouter.use(requireActiveSubscription);
+
+// QR Codes
+restrictedRouter.post('/qrs/order', orderQRs);
+restrictedRouter.get('/qrs', getMyQRs);
+restrictedRouter.delete('/qrs/batch', deleteQrBatch);
+
+// QR Orders (with tracking)
+restrictedRouter.get('/orders', getVendorOrders);
+restrictedRouter.post('/orders', createOrder);
+restrictedRouter.post('/orders/:orderId/pay', payOrder);
+restrictedRouter.get('/orders/:orderId/download', downloadOrderQrPdf);
+
 // Campaign Management
-router.get('/campaigns', getVendorCampaigns);
-router.post('/campaigns', requestCampaign);
-router.put('/campaigns/:id', updateCampaign);
-router.put('/campaigns/:id/status', updateCampaignStatus);
-router.delete('/campaigns/:id', deleteCampaign);
-router.get('/campaigns/stats', getCampaignStats);
+restrictedRouter.get('/campaigns', getVendorCampaigns);
+restrictedRouter.post('/campaigns', requestCampaign);
+restrictedRouter.put('/campaigns/:id', updateCampaign);
+restrictedRouter.put('/campaigns/:id/status', updateCampaignStatus);
+restrictedRouter.delete('/campaigns/:id', deleteCampaign);
+restrictedRouter.get('/campaigns/stats', getCampaignStats);
+restrictedRouter.get('/campaigns/:id/download', downloadCampaignQrPdf);
 
 // Product Management
-router.post('/campaigns/:id/pay', payCampaign);
-router.post('/products', addProduct);
-router.post('/products/import', importProducts);
-router.get('/products', getVendorProducts);
-router.put('/products/:id', updateProduct);
-router.delete('/products/:id', deleteProduct);
+restrictedRouter.post('/campaigns/:id/pay', payCampaign);
+restrictedRouter.post('/products', addProduct);
+restrictedRouter.post('/products/import', importProducts);
+restrictedRouter.get('/products', getVendorProducts);
+restrictedRouter.put('/products/:id', updateProduct);
+restrictedRouter.delete('/products/:id', deleteProduct);
+
+// Mount Restricted Router
+router.use('/', restrictedRouter);
 
 module.exports = router;

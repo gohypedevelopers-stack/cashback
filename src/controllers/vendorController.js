@@ -43,7 +43,10 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
 };
 
 const notifyAdminsAboutPaidOrder = async ({ order, vendor, campaignTitle = 'campaign' }) => {
-    if (!order) return;
+    if (!order) {
+        console.log('[NotifyAdmins] No order provided, skipping notification');
+        return;
+    }
 
     try {
         const admins = await prisma.user.findMany({
@@ -51,7 +54,12 @@ const notifyAdminsAboutPaidOrder = async ({ order, vendor, campaignTitle = 'camp
             select: { id: true }
         });
 
-        if (!admins.length) return;
+        console.log(`[NotifyAdmins] Found ${admins.length} admin(s) in database`);
+
+        if (!admins.length) {
+            console.log('[NotifyAdmins] No admins found, skipping notification');
+            return;
+        }
 
         const vendorLabel =
             vendor?.businessName ||
@@ -81,12 +89,13 @@ const notifyAdminsAboutPaidOrder = async ({ order, vendor, campaignTitle = 'camp
             metadata
         }));
 
-        await prisma.notification.createMany({
+        const result = await prisma.notification.createMany({
             data: notifications,
             skipDuplicates: true
         });
+        console.log(`[NotifyAdmins] Created ${result.count} notification(s) for order ${shortOrderId}`);
     } catch (error) {
-        console.error('Failed to notify admins about paid order', error);
+        console.error('[NotifyAdmins] Failed to notify admins about paid order', error);
     }
 };
 
@@ -741,15 +750,74 @@ exports.requestCredentialUpdate = async (req, res) => {
     }
 };
 
-exports.requestBrand = async (_req, res) => {
-    res.status(403).json({
-        message: 'New brand creation requests must be handled by the admin dashboard'
-    });
+exports.requestBrand = async (req, res) => {
+    try {
+        const { name, website, logoUrl } = req.body;
+
+        if (!name) {
+            return res.status(400).json({ message: 'Brand name is required' });
+        }
+
+        // Auto-create Vendor and Wallet if they don't exist
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+
+        // Check if brand already exists for this vendor
+        const existingBrand = await prisma.brand.findUnique({
+            where: { vendorId: vendor.id }
+        });
+
+        if (existingBrand) {
+            return res.status(400).json({ message: 'You already have a registered brand.' });
+        }
+
+        const brand = await prisma.brand.create({
+            data: {
+                name,
+                website,
+                logoUrl,
+                vendorId: vendor.id,
+                status: 'pending' // Default to pending for admin approval
+            }
+        });
+
+        // Log activity
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'brand_creation_request',
+            entityType: 'brand',
+            entityId: brand.id,
+            metadata: { name, website },
+            req
+        });
+
+        // Notify Admins
+        const admins = await prisma.user.findMany({
+            where: { role: 'admin' },
+            select: { id: true }
+        });
+
+        if (admins.length) {
+            const notifications = admins.map(admin => ({
+                userId: admin.id,
+                title: 'New Brand Registration',
+                message: `Vendor ${vendor.businessName} has registered a new brand: ${name}`,
+                type: 'brand_registration',
+                metadata: { brandId: brand.id, vendorId: vendor.id }
+            }));
+            await prisma.notification.createMany({ data: notifications });
+        }
+
+        res.status(201).json({ message: 'Brand registered successfully! Waiting for approval.', brand });
+
+    } catch (error) {
+        console.error('Request Brand Error:', error);
+        res.status(500).json({ message: 'Failed to register brand', error: error.message });
+    }
 };
 
 exports.requestCampaign = async (req, res) => {
     try {
-        const { brandId, title, description, cashbackAmount, startDate, endDate, totalBudget, subtotal, allocations } = req.body;
+        const { brandId, productId, title, description, cashbackAmount, startDate, endDate, totalBudget, subtotal, allocations } = req.body;
         console.log('Requesting Campaign Creation:', JSON.stringify(req.body, null, 2));
 
         // Verify ownership/status of brand
@@ -763,6 +831,19 @@ exports.requestCampaign = async (req, res) => {
 
         if (brand.status !== 'active') {
             return res.status(400).json({ message: 'Brand is not active' });
+        }
+
+        // Validate productId if provided
+        let validProductId = null;
+        if (productId) {
+            const product = await prisma.product.findUnique({ where: { id: productId } });
+            if (!product) {
+                return res.status(404).json({ message: 'Product not found' });
+            }
+            if (product.brandId !== brandId) {
+                return res.status(400).json({ message: 'Product does not belong to this brand' });
+            }
+            validProductId = productId;
         }
 
         const allocationRows = Array.isArray(allocations) ? allocations : [];
@@ -788,6 +869,7 @@ exports.requestCampaign = async (req, res) => {
         const campaign = await prisma.campaign.create({
             data: {
                 brandId,
+                productId: validProductId,
                 title,
                 description,
                 cashbackAmount,
@@ -806,6 +888,7 @@ exports.requestCampaign = async (req, res) => {
             entityId: campaign.id,
             metadata: {
                 brandId,
+                productId: validProductId,
                 title,
                 totalBudget: normalizedTotalBudget,
                 subtotal: normalizedSubtotal,
@@ -1480,6 +1563,28 @@ exports.payCampaign = async (req, res) => {
                 where: { id: campaign.id },
                 data: { status: 'active' }
             });
+
+            // Generate QRs automatically based on allocations
+            const qrData = [];
+            for (const alloc of allocArray) {
+                const qty = parseInt(alloc.quantity) || 0;
+                const amt = parseFloat(alloc.cashbackAmount) || 0;
+                if (qty > 0 && amt > 0) {
+                    for (let i = 0; i < qty; i++) {
+                        qrData.push({
+                            campaignId: campaign.id,
+                            vendorId: vendor.id,
+                            uniqueHash: generateQRHash(),
+                            cashbackAmount: amt,
+                            status: 'generated'
+                        });
+                    }
+                }
+            }
+
+            if (qrData.length > 0) {
+                await tx.qRCode.createMany({ data: qrData });
+            }
         });
 
         safeLogVendorActivity({
@@ -1503,5 +1608,181 @@ exports.payCampaign = async (req, res) => {
     }
 };
 
+// Download QR PDF for an order
+const { generateQrPdf } = require('../utils/qrPdfGenerator');
 
- 
+exports.downloadOrderQrPdf = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) {
+            return res.status(404).json({ message: 'Vendor profile not found' });
+        }
+
+        // Get order and verify ownership
+        const order = await prisma.qROrder.findUnique({
+            where: { id: orderId },
+            include: {
+                QRCodes: {
+                    select: { uniqueHash: true, cashbackAmount: true }
+                }
+            }
+        });
+
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        if (order.vendorId !== vendor.id) {
+            return res.status(403).json({ message: 'Unauthorized access to this order' });
+        }
+
+        if (order.status !== 'paid') {
+            return res.status(400).json({ message: 'PDF is only available for paid orders' });
+        }
+
+        if (!order.QRCodes || order.QRCodes.length === 0) {
+            return res.status(400).json({ message: 'No QR codes found for this order' });
+        }
+
+        // Get campaign title
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: order.campaignId },
+            select: { title: true }
+        });
+
+        // Generate PDF
+        const pdfBuffer = await generateQrPdf({
+            qrCodes: order.QRCodes,
+            campaignTitle: campaign?.title || 'Campaign',
+            orderId: order.id
+        });
+
+        // Send PDF
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="QR_Order_${orderId.slice(-8)}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.send(pdfBuffer);
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'qr_pdf_download',
+            entityType: 'order',
+            entityId: orderId,
+            metadata: { qrCount: order.QRCodes.length },
+            req
+        });
+
+    } catch (error) {
+        console.error('PDF Download Error:', error);
+        res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
+    }
+};
+
+// Download QR PDF for a campaign (all QRs)
+exports.downloadCampaignQrPdf = async (req, res) => {
+    try {
+        const { id: campaignId } = req.params;
+        console.log('[CampaignPDF] Starting download for campaign:', campaignId);
+
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) {
+            return res.status(404).json({ message: 'Vendor profile not found' });
+        }
+        console.log('[CampaignPDF] Vendor found:', vendor.id);
+
+        // Get campaign and verify ownership
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: {
+                Brand: { select: { vendorId: true } }
+            }
+        });
+
+        if (!campaign) {
+            console.log('[CampaignPDF] Campaign not found');
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+        console.log('[CampaignPDF] Campaign found:', campaign.title, 'Status:', campaign.status);
+
+        if (campaign.Brand.vendorId !== vendor.id) {
+            console.log('[CampaignPDF] Unauthorized - vendor mismatch');
+            return res.status(403).json({ message: 'Unauthorized access to this campaign' });
+        }
+
+        if (campaign.status !== 'active') {
+            console.log('[CampaignPDF] Campaign not active:', campaign.status);
+            return res.status(400).json({ message: 'PDF is only available for active campaigns' });
+        }
+
+        // Get all QRs for this campaign
+        let qrCodes = await prisma.qRCode.findMany({
+            where: { campaignId },
+            select: { uniqueHash: true, cashbackAmount: true }
+        });
+        console.log('[CampaignPDF] Found QR codes:', qrCodes.length);
+
+        if (!qrCodes || qrCodes.length === 0) {
+            console.log('[CampaignPDF] No QRs found. Auto-generating based on allocations...');
+            const allocations = campaign.allocations || [];
+            const allocArray = Array.isArray(allocations) ? allocations : [];
+            const newQrData = [];
+
+            for (const alloc of allocArray) {
+                const qty = parseInt(alloc.quantity) || 0;
+                const amt = parseFloat(alloc.cashbackAmount) || 0;
+                if (qty > 0 && amt > 0) {
+                    for (let i = 0; i < qty; i++) {
+                        newQrData.push({
+                            campaignId: campaign.id,
+                            vendorId: vendor.id,
+                            uniqueHash: generateQRHash(),
+                            cashbackAmount: amt,
+                            status: 'generated'
+                        });
+                    }
+                }
+            }
+
+            if (newQrData.length > 0) {
+                await prisma.qRCode.createMany({ data: newQrData });
+                console.log(`[CampaignPDF] Auto-generated ${newQrData.length} QRs.`);
+                // Fetch the newly created QRs
+                qrCodes = await prisma.qRCode.findMany({
+                    where: { campaignId },
+                    select: { uniqueHash: true, cashbackAmount: true }
+                });
+            } else {
+                return res.status(400).json({ message: 'No allocations found to generate QRs' });
+            }
+        }
+
+        // Generate PDF
+        console.log('[CampaignPDF] Generating PDF...');
+        const pdfBuffer = await generateQrPdf({
+            qrCodes,
+            campaignTitle: campaign.title,
+            orderId: campaignId
+        });
+        console.log('[CampaignPDF] PDF generated, size:', pdfBuffer.length);
+
+        // Send PDF
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="QR_Campaign_${campaignId.slice(-8)}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.send(pdfBuffer);
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'campaign_qr_pdf_download',
+            entityType: 'campaign',
+            entityId: campaignId,
+            metadata: { qrCount: qrCodes.length },
+            req
+        });
+
+    } catch (error) {
+        console.error('[CampaignPDF] Error:', error.message, error.stack);
+        res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
+    }
+};
