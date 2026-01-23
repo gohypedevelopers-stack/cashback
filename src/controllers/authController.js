@@ -2,6 +2,7 @@ const prisma = require('../config/prismaClient');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const { isSubscriptionActive } = require('../utils/subscriptionUtils');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -10,7 +11,7 @@ const generateToken = (id, role) => {
 };
 
 exports.register = async (req, res) => {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, role, username } = req.body;
 
     try {
         const userExists = await prisma.user.findUnique({ where: { email } });
@@ -27,6 +28,7 @@ exports.register = async (req, res) => {
             data: {
                 name,
                 email,
+                username,
                 password: hashedPassword,
                 role: role || 'customer'
             }
@@ -37,6 +39,7 @@ exports.register = async (req, res) => {
                 _id: user.id,
                 name: user.name,
                 email: user.email,
+                username: user.username,
                 role: user.role,
                 token: generateToken(user.id, user.role)
             });
@@ -49,22 +52,79 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, username } = req.body;
+
+    if (!email && !username) {
+        return res.status(400).json({ message: 'Email or username is required' });
+    }
 
     try {
-        const user = await prisma.user.findUnique({ where: { email } });
-
-        if (user && (await bcrypt.compare(password, user.password))) {
-            res.json({
-                _id: user.id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                token: generateToken(user.id, user.role)
-            });
-        } else {
-            res.status(401).json({ message: 'Invalid email or password' });
+        let user = null;
+        if (email) {
+            user = await prisma.user.findUnique({ where: { email } });
         }
+
+        if (!user && username) {
+            user = await prisma.user.findUnique({ where: { username } });
+        }
+
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        const passwordMatched = user.password && (await bcrypt.compare(password, user.password));
+        if (!passwordMatched) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        let vendorDetails;
+        if (user.role === 'vendor') {
+            const vendor = await prisma.vendor.findUnique({
+                where: { userId: user.id },
+                include: {
+                    Brand: {
+                        include: { Subscription: true }
+                    }
+                }
+            });
+
+            if (!vendor || !vendor.Brand || !vendor.Brand.Subscription) {
+                return res.status(403).json({ message: 'Vendor is not yet assigned a brand and subscription' });
+            }
+
+            let { Subscription } = vendor.Brand;
+            const now = new Date();
+            if (Subscription.endDate && new Date(Subscription.endDate) <= now && Subscription.status !== 'EXPIRED') {
+                Subscription = await prisma.subscription.update({
+                    where: { id: Subscription.id },
+                    data: { status: 'EXPIRED' }
+                });
+                await prisma.vendor.update({
+                    where: { id: vendor.id },
+                    data: { status: 'expired' }
+                });
+            }
+
+            if (!isSubscriptionActive(Subscription)) {
+                return res.status(403).json({ message: 'Vendor subscription is not active' });
+            }
+
+            vendorDetails = {
+                vendorId: vendor.id,
+                brand: vendor.Brand,
+                subscription: Subscription
+            };
+        }
+
+        res.json({
+            _id: user.id,
+            name: user.name,
+            email: user.email,
+            username: user.username,
+            role: user.role,
+            token: generateToken(user.id, user.role),
+            vendor: vendorDetails
+        });
     } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }

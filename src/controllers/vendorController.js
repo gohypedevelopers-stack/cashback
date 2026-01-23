@@ -1,4 +1,4 @@
-const prisma = require('../config/prismaClient');
+﻿const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 
 // Helper to generate unique hash
@@ -6,14 +6,40 @@ const generateQRHash = () => {
     return crypto.randomBytes(32).toString('hex');
 };
 
+// Helper: Ensure Vendor and Wallet exist
+const ensureVendorAndWallet = async (userId, tx = prisma) => {
+    let vendor = await tx.vendor.findUnique({ where: { userId } });
+    if (!vendor) {
+        // Create Vendor Profile
+        const user = await tx.user.findUnique({ where: { id: userId } });
+        if (!user) throw new Error('User not found');
+
+        vendor = await tx.vendor.create({
+            data: {
+                userId,
+                name: user.name,
+                email: user.email,
+                status: 'active'
+            }
+        });
+    }
+
+    let wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
+    if (!wallet) {
+        wallet = await tx.wallet.create({
+            data: {
+                vendorId: vendor.id,
+                balance: 0.0,
+                currency: 'INR'
+            }
+        });
+    }
+    return { vendor, wallet };
+};
+
 exports.getWalletBalance = async (req, res) => {
     try {
-        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
-
-        const wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
-        if (!wallet) return res.status(404).json({ message: 'Wallet not found' });
-
+        const { wallet } = await ensureVendorAndWallet(req.user.id);
         res.json(wallet);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching wallet', error: error.message });
@@ -25,11 +51,7 @@ exports.rechargeWallet = async (req, res) => {
         const { amount } = req.body; // In real app, this comes from Payment Gateway callback
 
         await prisma.$transaction(async (tx) => {
-            const vendor = await tx.vendor.findUnique({ where: { userId: req.user.id } });
-            if (!vendor) throw new Error('Vendor not found');
-
-            const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
-            if (!wallet) throw new Error('Wallet not found');
+            const { wallet } = await ensureVendorAndWallet(req.user.id, tx);
 
             // Update Wallet
             const updatedWallet = await tx.wallet.update({
@@ -60,21 +82,40 @@ exports.rechargeWallet = async (req, res) => {
 
 exports.orderQRs = async (req, res) => {
     try {
-        const { campaignId, quantity } = req.body;
+        const { campaignId, quantity, cashbackAmount } = req.body;
+
+        if (!campaignId) {
+            return res.status(400).json({ message: 'Campaign ID is required' });
+        }
+
+        const parsedQuantity = parseInt(quantity, 10);
+        if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+            return res.status(400).json({ message: 'Invalid quantity' });
+        }
+
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+        if (!campaign) {
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+
+        if (campaign.status !== 'active') {
+            return res.status(400).json({ message: 'Campaign is not active (Pending or Rejected)' });
+        }
+
+        const rawCashback =
+            cashbackAmount === undefined || cashbackAmount === null || cashbackAmount === ''
+                ? campaign.cashbackAmount
+                : cashbackAmount;
+        const qrCashback = parseFloat(rawCashback);
+        if (isNaN(qrCashback) || qrCashback <= 0) {
+            return res.status(400).json({ message: 'Invalid cashback amount' });
+        }
 
         const count = await prisma.$transaction(async (tx) => {
-            const vendor = await tx.vendor.findUnique({ where: { userId: req.user.id } });
-            if (!vendor) throw new Error('Vendor not found');
+            const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
 
-            const campaign = await tx.campaign.findUnique({ where: { id: campaignId } });
-            if (!campaign) throw new Error('Campaign not found');
-
-            if (campaign.status !== 'active') {
-                throw new Error('Campaign is not active (Pending or Rejected)');
-            }
-
-            const totalCost = parseFloat(campaign.cashbackAmount) * parseInt(quantity);
-            const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
+            // Use the cashbackAmount from the request (per-QR amount)
+            const totalCost = qrCashback * parsedQuantity;
 
             if (parseFloat(wallet.balance) < totalCost) {
                 throw new Error('Insufficient wallet balance');
@@ -94,19 +135,18 @@ exports.orderQRs = async (req, res) => {
                     amount: totalCost,
                     category: 'qr_purchase',
                     status: 'success',
-                    description: `Purchased ${quantity} QRs for Campaign ${campaign.title}`
+                    description: `Purchased ${parsedQuantity} QRs (â‚¹${qrCashback} each) for Campaign ${campaign.title}`
                 }
             });
 
-            // Generate QRs
-            // Note: createMany is not supported for relation fields if needing to return data, 
-            // but here we just need to insert. PostgreSQL supports createMany.
+            // Generate QRs with per-QR cashbackAmount
             const qrData = [];
-            for (let i = 0; i < quantity; i++) {
+            for (let i = 0; i < parsedQuantity; i++) {
                 qrData.push({
                     campaignId,
                     vendorId: vendor.id,
                     uniqueHash: generateQRHash(),
+                    cashbackAmount: qrCashback,
                     status: 'generated'
                 });
             }
@@ -129,11 +169,94 @@ exports.getMyQRs = async (req, res) => {
 
         const qrs = await prisma.qRCode.findMany({
             where: { vendorId: vendor.id },
-            include: { Campaign: true } // Assuming relation name
+            include: { Campaign: true },
+            orderBy: { createdAt: 'desc' } // Latest QRs first
         });
-        res.json(qrs);
+
+        // Convert Prisma Decimal to plain numbers for JSON serialization
+        const formattedQrs = qrs.map(qr => ({
+            ...qr,
+            cashbackAmount: qr.cashbackAmount ? Number(qr.cashbackAmount) : 0, // Per-QR cashback
+            Campaign: qr.Campaign ? {
+                ...qr.Campaign,
+                cashbackAmount: qr.Campaign.cashbackAmount ? Number(qr.Campaign.cashbackAmount) : 0,
+                totalBudget: qr.Campaign.totalBudget ? Number(qr.Campaign.totalBudget) : null
+            } : null
+        }));
+
+        res.json(formattedQrs);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching QRs', error: error.message });
+    }
+};
+
+exports.deleteQrBatch = async (req, res) => {
+    try {
+        const { campaignId: bodyCampaignId, cashbackAmount: bodyCashbackAmount } = req.body || {};
+        const { campaignId: queryCampaignId, cashbackAmount: queryCashbackAmount } = req.query || {};
+        const campaignId = bodyCampaignId || queryCampaignId;
+        const cashbackAmount = bodyCashbackAmount ?? queryCashbackAmount;
+
+        if (!campaignId) {
+            return res.status(400).json({ message: 'Campaign ID is required' });
+        }
+
+        const parsedCashback = Number(cashbackAmount);
+        if (!Number.isFinite(parsedCashback) || parsedCashback < 0) {
+            return res.status(400).json({ message: 'Invalid cashback amount' });
+        }
+
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: { Brand: true }
+        });
+        const allowNullVendor = campaign?.Brand?.vendorId === vendor.id;
+
+        const normalizedCashback = Number(parsedCashback.toFixed(2));
+        const normalizedCashbackString = normalizedCashback.toFixed(2);
+        const cashbackAmountFilter =
+            normalizedCashback > 0 ? { in: [normalizedCashbackString, '0.00'] } : normalizedCashbackString;
+        const baseWhere = {
+            campaignId,
+            cashbackAmount: cashbackAmountFilter,
+            ...(allowNullVendor
+                ? { OR: [{ vendorId: vendor.id }, { vendorId: null }] }
+                : { vendorId: vendor.id })
+        };
+
+        const totalCount = await prisma.qRCode.count({ where: baseWhere });
+        if (totalCount === 0) {
+            return res.status(404).json({ message: 'No QR batch found for this campaign' });
+        }
+
+        const deletableStatuses = ['generated', 'assigned', 'active'];
+        const deleteWhere = {
+            ...baseWhere,
+            status: { in: deletableStatuses }
+        };
+
+        const deletableCount = await prisma.qRCode.count({ where: deleteWhere });
+        if (deletableCount === 0) {
+            return res.status(400).json({
+                message: 'No deletable QRs in this batch. Redeemed/expired QRs cannot be removed.',
+                total: totalCount,
+                deleted: 0,
+                skipped: totalCount
+            });
+        }
+
+        const deleted = await prisma.qRCode.deleteMany({ where: deleteWhere });
+        const skipped = totalCount - deleted.count;
+
+        res.json({
+            message: `Deleted ${deleted.count} QRs from batch`,
+            total: totalCount,
+            deleted: deleted.count,
+            skipped
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to delete QR batch', error: error.message });
     }
 };
 
@@ -197,32 +320,129 @@ exports.getVendorTransactions = async (req, res) => {
     }
 };
 
-exports.getActiveCampaigns = async (req, res) => {
+exports.getVendorCampaigns = async (req, res) => {
     try {
+        // Find vendor first to get ID
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) return res.json([]);
+
         const campaigns = await prisma.campaign.findMany({
-            where: { status: 'active' },
+            where: {
+                Brand: {
+                    vendorId: vendor.id
+                }
+            },
             include: { Brand: true },
             orderBy: { createdAt: 'desc' }
         });
+        // console.log('Fetched Vendor Campaigns:', JSON.stringify(campaigns, null, 2));
         res.json(campaigns);
     } catch (error) {
+        console.error('getVendorCampaigns Error:', error);
         res.status(500).json({ message: 'Error fetching campaigns', error: error.message });
     }
+};
+
+// Get Vendor Profile
+exports.getVendorProfile = async (req, res) => {
+    try {
+        let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) {
+            // Auto-create vendor profile
+            vendor = await prisma.vendor.create({
+                data: {
+                    userId: req.user.id,
+                    businessName: 'My Company',
+                    status: 'active'
+                }
+            });
+        }
+        res.json(vendor);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching vendor profile', error: error.message });
+    }
+};
+
+// Get Vendor's First Brand
+exports.getVendorBrand = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({
+            where: { userId: req.user.id },
+            include: {
+                Brand: {
+                    include: {
+                        Subscription: true
+                    }
+                }
+            }
+        });
+
+        if (!vendor || !vendor.Brand) {
+            return res.status(404).json({ message: 'Brand not found for this vendor' });
+        }
+
+        const brand = vendor.Brand;
+        res.json({
+            ...brand,
+            subscription: brand.Subscription || null
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching brand', error: error.message });
+    }
+};
+
+exports.getVendorBrands = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const brand = await prisma.brand.findUnique({
+            where: { vendorId: vendor.id },
+            include: { Subscription: true }
+        });
+        if (!brand) {
+            return res.json([]);
+        }
+        res.json([{ ...brand, subscription: brand.Subscription || null }]);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching brands', error: error.message });
+    }
+};
+
+// Upsert Vendor Brand (Create or Update)
+exports.upsertVendorBrand = async (req, res) => {
+    res.status(403).json({
+        message: 'Brand setup and modifications are performed through the admin dashboard only'
+    });
 };
 
 exports.updateVendorProfile = async (req, res) => {
     try {
         const { businessName, contactPhone, gstin, address } = req.body;
 
-        const vendor = await prisma.vendor.update({
-            where: { userId: req.user.id },
-            data: {
-                businessName,
-                contactPhone,
-                gstin,
-                address
-            }
-        });
+        // Ensure Vendor Exists (or Create it)
+        let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+
+        if (!vendor) {
+            vendor = await prisma.vendor.create({
+                data: {
+                    userId: req.user.id,
+                    businessName: businessName || 'My Company',
+                    contactPhone,
+                    gstin,
+                    address,
+                    status: 'active'
+                }
+            });
+        } else {
+            vendor = await prisma.vendor.update({
+                where: { userId: req.user.id },
+                data: {
+                    businessName,
+                    contactPhone,
+                    gstin,
+                    address
+                }
+            });
+        }
 
         res.json({ message: 'Profile updated successfully', vendor });
     } catch (error) {
@@ -230,36 +450,16 @@ exports.updateVendorProfile = async (req, res) => {
     }
 };
 
-exports.requestBrand = async (req, res) => {
-    try {
-        const { name, logoUrl, website } = req.body;
-        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-
-        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
-
-        // Strict Check: Vendor must be verified/active
-        if (vendor.status !== 'active') { // Assuming schema update applied
-            return res.status(403).json({ message: 'Vendor account is pending verification' });
-        }
-
-        const brand = await prisma.brand.create({
-            data: {
-                name,
-                logoUrl,
-                website,
-                status: 'active', // Auto-active as per new requirement
-                vendorId: vendor.id
-            }
-        });
-        res.status(201).json({ message: 'Brand created successfully', brand });
-    } catch (error) {
-        res.status(500).json({ message: 'Request failed', error: error.message });
-    }
+exports.requestBrand = async (_req, res) => {
+    res.status(403).json({
+        message: 'New brand creation requests must be handled by the admin dashboard'
+    });
 };
 
 exports.requestCampaign = async (req, res) => {
     try {
-        const { brandId, title, description, cashbackAmount, startDate, endDate, totalBudget } = req.body;
+        const { brandId, title, description, cashbackAmount, startDate, endDate, totalBudget, subtotal, allocations } = req.body;
+        console.log('Requesting Campaign Creation:', JSON.stringify(req.body, null, 2));
 
         // Verify ownership/status of brand
         const brand = await prisma.brand.findUnique({ where: { id: brandId } });
@@ -283,34 +483,22 @@ exports.requestCampaign = async (req, res) => {
                 startDate: new Date(startDate),
                 endDate: new Date(endDate),
                 totalBudget,
-                status: 'active' // Auto-active as per new requirement
+                subtotal,
+                allocations,
+                status: 'pending'
             }
         });
         res.status(201).json({ message: 'Campaign created successfully', campaign });
     } catch (error) {
-        res.status(500).json({ message: 'Request failed', error: error.message });
+        console.error('Campaign Creation Error:', error);
+        res.status(500).json({ message: 'Request failed', error: error.message, stack: error.stack });
     }
 };
 
-exports.updateBrand = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name, logoUrl, website } = req.body;
-        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-
-        const brand = await prisma.brand.findUnique({ where: { id } });
-        if (!brand || brand.vendorId !== vendor.id) {
-            return res.status(404).json({ message: 'Brand not found or unauthorized' });
-        }
-
-        const updatedBrand = await prisma.brand.update({
-            where: { id },
-            data: { name, logoUrl, website }
-        });
-        res.json({ message: 'Brand updated', brand: updatedBrand });
-    } catch (error) {
-        res.status(500).json({ message: 'Update failed', error: error.message });
-    }
+exports.updateBrand = async (_req, res) => {
+    res.status(403).json({
+        message: 'Brand metadata is locked to the admin panel; contact the admin for changes'
+    });
 };
 
 exports.updateCampaign = async (req, res) => {
@@ -373,6 +561,62 @@ exports.addProduct = async (req, res) => {
         res.status(201).json({ message: 'Product added', product });
     } catch (error) {
         res.status(500).json({ message: 'Error adding product', error: error.message });
+    }
+};
+
+exports.importProducts = async (req, res) => {
+    try {
+        const { brandId, products } = req.body;
+
+        if (!brandId) {
+            return res.status(400).json({ message: 'Brand ID is required' });
+        }
+        if (!Array.isArray(products) || products.length === 0) {
+            return res.status(400).json({ message: 'Provide at least one product to import' });
+        }
+
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+
+        const brand = await prisma.brand.findUnique({ where: { id: brandId } });
+        if (!brand || brand.vendorId !== vendor.id) {
+            return res.status(403).json({ message: 'Unauthorized brand access' });
+        }
+
+        const validProducts = products
+            .map((item) => {
+                const statusCandidate = typeof item.status === 'string' ? item.status.toLowerCase() : '';
+                const status =
+                    statusCandidate === 'inactive' || statusCandidate === 'blocked' ? statusCandidate : 'active';
+                return {
+                    brandId,
+                    name: item.name?.trim(),
+                    variant: item.variant?.trim() || null,
+                    category: item.category?.trim() || null,
+                    description: item.description?.trim() || null,
+                    packSize: item.packSize?.trim() || null,
+                    warranty: item.warranty?.trim() || null,
+                    imageUrl: item.imageUrl?.trim() || null,
+                    bannerUrl: item.bannerUrl?.trim() || null,
+                    status,
+                };
+            })
+            .filter((item) => item.name);
+
+        if (validProducts.length === 0) {
+            return res.status(400).json({ message: 'No valid products found to import' });
+        }
+
+        const result = await prisma.product.createMany({
+            data: validProducts,
+            skipDuplicates: true
+        });
+
+        res.status(201).json({
+            message: `${result.count} products imported`,
+            count: result.count
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error importing products', error: error.message });
     }
 };
 
@@ -523,31 +767,10 @@ exports.updateCampaignStatus = async (req, res) => {
     }
 };
 
-exports.deleteBrand = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-
-        const brand = await prisma.brand.findFirst({
-            where: { id, vendorId: vendor.id }
-        });
-
-        if (!brand) return res.status(404).json({ message: 'Brand not found' });
-
-        // Check dependencies
-        const campaigns = await prisma.campaign.count({ where: { brandId: id } });
-        const products = await prisma.product.count({ where: { brandId: id } });
-
-        if (campaigns > 0 || products > 0) {
-            return res.status(400).json({ message: 'Cannot delete brand with associated campaigns or products.' });
-        }
-
-        await prisma.brand.delete({ where: { id } });
-        res.json({ message: 'Brand deleted' });
-
-    } catch (error) {
-        res.status(500).json({ message: 'Delete failed', error: error.message });
-    }
+exports.deleteBrand = async (_req, res) => {
+    res.status(403).json({
+        message: 'Brand deletion is restricted to administrators'
+    });
 };
 
 exports.deleteCampaign = async (req, res) => {
@@ -561,17 +784,274 @@ exports.deleteCampaign = async (req, res) => {
 
         if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
 
-        // Check dependencies (QRs)
-        const qrCount = await prisma.qRCode.count({ where: { campaignId: id } });
-
-        if (qrCount > 0) {
-            return res.status(400).json({ message: 'Cannot delete campaign with generated QRs. Pause it instead.' });
-        }
-
-        await prisma.campaign.delete({ where: { id } });
+        await prisma.$transaction(async (tx) => {
+            await tx.qRCode.deleteMany({ where: { campaignId: id } });
+            await tx.campaign.delete({ where: { id } });
+        });
         res.json({ message: 'Campaign deleted' });
 
     } catch (error) {
         res.status(500).json({ message: 'Delete failed', error: error.message });
     }
 };
+
+// --- QR Order Management ---
+
+exports.getVendorOrders = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const orders = await prisma.qROrder.findMany({
+            where: { vendorId: vendor.id },
+            include: {
+                QRCodes: {
+                    select: { id: true, status: true, uniqueHash: true }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        // Get campaign titles
+        const campaignIds = [...new Set(orders.map(o => o.campaignId))];
+        const campaigns = await prisma.campaign.findMany({
+            where: { id: { in: campaignIds } },
+            select: { id: true, title: true }
+        });
+        const campaignMap = Object.fromEntries(campaigns.map(c => [c.id, c.title]));
+
+        const formattedOrders = orders.map(order => ({
+            id: order.id,
+            campaignId: order.campaignId,
+            campaignTitle: campaignMap[order.campaignId] || 'Unknown Campaign',
+            quantity: order.quantity,
+            cashbackAmount: Number(order.cashbackAmount),
+            printCost: Number(order.printCost),
+            totalAmount: Number(order.totalAmount),
+            status: order.status,
+            createdAt: order.createdAt,
+            qrCount: order.QRCodes.length
+        }));
+
+        res.json(formattedOrders);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching orders', error: error.message });
+    }
+};
+
+exports.createOrder = async (req, res) => {
+    try {
+        const { campaignId, quantity, cashbackAmount } = req.body;
+
+        if (!campaignId) {
+            return res.status(400).json({ message: 'Campaign ID is required' });
+        }
+
+        const parsedQuantity = parseInt(quantity, 10);
+        if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+            return res.status(400).json({ message: 'Invalid quantity' });
+        }
+
+        const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
+        if (!campaign) {
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+
+        if (campaign.status !== 'active') {
+            return res.status(400).json({ message: 'Campaign is not active' });
+        }
+
+        const rawCashback = cashbackAmount ?? campaign.cashbackAmount;
+        const qrCashback = parseFloat(rawCashback);
+        if (isNaN(qrCashback) || qrCashback <= 0) {
+            return res.status(400).json({ message: 'Invalid cashback amount' });
+        }
+
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const printCostPerQr = 1.0; // â‚¹1 per QR
+        const totalPrintCost = printCostPerQr * parsedQuantity;
+
+        // Create order (status: pending)
+        const order = await prisma.qROrder.create({
+            data: {
+                vendorId: vendor.id,
+                campaignId,
+                quantity: parsedQuantity,
+                cashbackAmount: qrCashback,
+                printCost: printCostPerQr,
+                totalAmount: totalPrintCost,
+                status: 'pending'
+            }
+        });
+
+        res.status(201).json({
+            message: 'Order created. Please pay to confirm.',
+            order: {
+                id: order.id,
+                campaignTitle: campaign.title,
+                quantity: order.quantity,
+                cashbackAmount: Number(order.cashbackAmount),
+                printCost: Number(order.printCost),
+                totalAmount: Number(order.totalAmount),
+                status: order.status
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Order creation failed', error: error.message });
+    }
+};
+
+exports.payOrder = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+
+        const order = await prisma.qROrder.findUnique({ where: { id: orderId } });
+        if (!order) {
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        if (order.status !== 'pending') {
+            return res.status(400).json({ message: `Order already ${order.status}` });
+        }
+
+        const { vendor, wallet } = await ensureVendorAndWallet(req.user.id);
+
+        if (order.vendorId !== vendor.id) {
+            return res.status(403).json({ message: 'Unauthorized' });
+        }
+
+        const printCost = Number(order.totalAmount);
+        const cashbackTotal = Number(order.cashbackAmount) * order.quantity;
+        const totalDeduction = printCost + cashbackTotal;
+
+        if (parseFloat(wallet.balance) < totalDeduction) {
+            return res.status(400).json({
+                message: 'Insufficient wallet balance',
+                required: totalDeduction,
+                available: Number(wallet.balance)
+            });
+        }
+
+        const campaign = await prisma.campaign.findUnique({ where: { id: order.campaignId } });
+
+        await prisma.$transaction(async (tx) => {
+            // Deduct from wallet
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { decrement: totalDeduction } }
+            });
+
+            // Log transaction
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'debit',
+                    amount: totalDeduction,
+                    category: 'qr_purchase',
+                    status: 'success',
+                    description: `QR Order #${order.id.slice(-6)} - ${order.quantity} QRs (â‚¹${Number(order.cashbackAmount)} cashback + â‚¹${printCost} print)`
+                }
+            });
+
+            // Generate QR codes
+            const qrData = [];
+            for (let i = 0; i < order.quantity; i++) {
+                qrData.push({
+                    campaignId: order.campaignId,
+                    vendorId: vendor.id,
+                    orderId: order.id,
+                    uniqueHash: generateQRHash(),
+                    cashbackAmount: order.cashbackAmount,
+                    status: 'active'
+                });
+            }
+            await tx.qRCode.createMany({ data: qrData });
+
+            // Update order status to paid
+            await tx.qROrder.update({
+                where: { id: order.id },
+                data: { status: 'paid' }
+            });
+        });
+
+        res.json({
+            message: 'Payment successful. Admin will ship QR codes.',
+            order: {
+                id: order.id,
+                status: 'paid',
+                quantity: order.quantity,
+                totalPaid: totalDeduction
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Payment failed', error: error.message });
+    }
+};
+
+
+
+exports.payCampaign = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { vendor, wallet } = await ensureVendorAndWallet(req.user.id);
+
+        const campaign = await prisma.campaign.findUnique({ where: { id } });
+        if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
+
+        if (campaign.status === 'active') return res.status(400).json({ message: 'Campaign is already active' });
+
+        // Calculate Cost: Cashback Budget + Print Cost
+        // Print Cost = Total Quantity * 1
+        const allocations = campaign.allocations || []; // allocations is JSON
+
+        // Ensure allocations is an array
+        const allocArray = Array.isArray(allocations) ? allocations : [];
+        const totalQty = allocArray.reduce((sum, a) => sum + (parseInt(a.quantity) || 0), 0);
+        const printCost = totalQty * 1;
+
+        const totalCost = Number(campaign.totalBudget) + printCost;
+
+        if (parseFloat(wallet.balance) < totalCost) {
+            return res.status(400).json({
+                message: 'Insufficient wallet balance',
+                required: totalCost,
+                available: Number(wallet.balance)
+            });
+        }
+
+        await prisma.$transaction(async (tx) => {
+            // Deduct from wallet
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { decrement: totalCost } }
+            });
+
+            // Log transaction
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'debit',
+                    amount: totalCost,
+                    category: 'campaign_payment',
+                    status: 'success',
+                    description: `Payment for Campaign: ${campaign.title} (Cashback: ${campaign.totalBudget} + Print: ${printCost})`
+                }
+            });
+
+            // Activate Campaign
+            await tx.campaign.update({
+                where: { id: campaign.id },
+                data: { status: 'active' }
+            });
+        });
+
+        res.json({ message: 'Campaign payment successful. Campaign is now active.' });
+
+    } catch (error) {
+        console.error('Campaign Payment Error:', error);
+        res.status(500).json({ message: 'Payment failed', error: error.message });
+    }
+};
+
+
+ 

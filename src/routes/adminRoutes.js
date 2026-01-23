@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
 const {
-    createBrand, getAllBrands,
+    createBrand, getAllBrands, getSubscriptions, updateVendorSubscription,
     createCampaign, getAllCampaigns,
     getAllVendors, createVendorProfile,
     verifyBrand, verifyCampaign,
@@ -10,7 +10,8 @@ const {
     getAllTransactions, getAllQRs,
     verifyVendor, creditWallet, updateCampaignStatus, getVendorDetails,
     getPendingWithdrawals, processWithdrawal,
-    getAllSupportTickets, replySupportTicket, sendNotification
+    getAllSupportTickets, replySupportTicket, sendNotification,
+    getAllOrders, updateOrderStatus
 } = require('../controllers/adminController');
 
 const {
@@ -31,6 +32,7 @@ router.get('/dashboard', getSystemStats);
 // Brand Management
 router.post('/brands', createBrand);
 router.get('/brands', getAllBrands);
+router.get('/subscriptions', getSubscriptions);
 router.put('/brands/:id/verify', verifyBrand);
 
 // Product Management (Admin Managed)
@@ -58,6 +60,7 @@ router.get('/vendors', getAllVendors);
 router.post('/vendors', createVendorProfile);
 router.put('/vendors/:id/verify', verifyVendor); // Verify Vendor Onboarding
 router.get('/vendors/:id', getVendorDetails); // Detailed View
+router.put('/vendors/:id/subscription', updateVendorSubscription);
 
 // Wallet Management
 router.post('/wallets/credit', creditWallet); // Manual Credit
@@ -78,5 +81,9 @@ router.put('/withdrawals/:id/process', processWithdrawal);
 router.get('/support', getAllSupportTickets);
 router.put('/support/:id', replySupportTicket);
 router.post('/notifications', sendNotification);
+
+// QR Order Management
+router.get('/orders', getAllOrders);
+router.put('/orders/:id/status', updateOrderStatus);
 
 module.exports = router;

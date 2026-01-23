@@ -26,7 +26,12 @@ exports.scanAndRedeem = async (req, res) => {
                 throw new Error('Campaign expired or not started');
             }
 
-            const cashbackAmount = parseFloat(qr.Campaign.cashbackAmount);
+            const qrAmount = parseFloat(qr.cashbackAmount);
+            const campaignAmount = parseFloat(qr.Campaign.cashbackAmount);
+            const cashbackAmount = !isNaN(qrAmount) && qrAmount > 0 ? qrAmount : campaignAmount;
+            if (isNaN(cashbackAmount) || cashbackAmount <= 0) {
+                throw new Error('Invalid cashback amount for this QR');
+            }
 
             // 1. Find User Wallet
             let wallet = await tx.wallet.findUnique({ where: { userId } });
@@ -38,10 +43,6 @@ exports.scanAndRedeem = async (req, res) => {
             const upiMethod = await tx.payoutMethod.findFirst({
                 where: { userId, type: 'upi', isPrimary: true }
             });
-
-            if (!upiMethod) {
-                throw new Error('Please link your UPI ID first to receive instant cashback');
-            }
 
             // 3. Credit Wallet (Ledger Entry)
             await tx.wallet.update({
@@ -60,27 +61,26 @@ exports.scanAndRedeem = async (req, res) => {
                 }
             });
 
-            // 4. Auto-Debit (Instant Payout)
-            // In a real system, we would call Razorpay X / Cashfree here.
-            // If API fails, we would revert or leave balance in wallet.
-            // Here we assume "Real Time" success.
+            // 4. Auto-Debit (Instant Payout) - ONLY IF UPI EXISTS
+            let payoutTx = null;
+            if (upiMethod) {
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: { balance: { decrement: cashbackAmount } }
+                });
 
-            await tx.wallet.update({
-                where: { id: wallet.id },
-                data: { balance: { decrement: cashbackAmount } }
-            });
-
-            const payoutTx = await tx.transaction.create({
-                data: {
-                    walletId: wallet.id,
-                    type: 'debit',
-                    amount: cashbackAmount,
-                    category: 'withdrawal',
-                    status: 'success', // Instantly Successful
-                    description: `Instant Payout to UPI: ${upiMethod.value}`,
-                    referenceId: `BANK_REF_${Date.now()}` // Mock Bank Ref
-                }
-            });
+                payoutTx = await tx.transaction.create({
+                    data: {
+                        walletId: wallet.id,
+                        type: 'debit',
+                        amount: cashbackAmount,
+                        category: 'withdrawal',
+                        status: 'success', // Instantly Successful
+                        description: `Instant Payout to UPI: ${upiMethod.value}`,
+                        referenceId: `BANK_REF_${Date.now()}` // Mock Bank Ref
+                    }
+                });
+            }
 
             // Update QR Status
             await tx.qRCode.update({
@@ -89,14 +89,15 @@ exports.scanAndRedeem = async (req, res) => {
                     status: 'redeemed',
                     redeemedByUserId: userId,
                     redeemedAt: now,
-                    payoutTransactionId: payoutTx.id
+                    payoutTransactionId: payoutTx ? payoutTx.id : null
                 }
             });
 
             return {
                 amount: cashbackAmount,
-                payoutTo: upiMethod.value,
-                campaign: qr.Campaign
+                payoutTo: upiMethod ? upiMethod.value : 'Wallet Balance',
+                campaign: qr.Campaign,
+                isWalletCredit: !upiMethod
             };
         });
 
@@ -139,9 +140,13 @@ exports.verifyQR = async (req, res) => {
             return res.status(400).json({ message: 'Campaign expired or not started' });
         }
 
+        const qrAmount = parseFloat(qr.cashbackAmount);
+        const campaignAmount = parseFloat(qr.Campaign.cashbackAmount);
+        const amount = !isNaN(qrAmount) && qrAmount > 0 ? qrAmount : campaignAmount;
+
         res.json({
             valid: true,
-            amount: qr.Campaign.cashbackAmount,
+            amount,
             brand: qr.Campaign.Brand.name,
             campaign: qr.Campaign.title
         });
