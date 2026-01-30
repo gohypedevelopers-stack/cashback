@@ -24,10 +24,18 @@ exports.getHomeData = async (req, res) => {
             include: { Brand: true }
         });
 
+        // Recent Coupons (New Feature)
+        const featuredCoupons = await prisma.coupon.findMany({
+            where: { status: 'active' },
+            take: 3,
+            orderBy: { createdAt: 'desc' }
+        });
+
         res.json({
             banners,
             brands,
             featuredProducts,
+            featuredCoupons,
             stats: { productsOwned: 0, productsReported: 0 } // Placeholders for guest
         });
     } catch (error) {
@@ -231,5 +239,39 @@ exports.getStaticPage = async (req, res) => {
         res.json(page);
     } else {
         res.status(404).json({ message: 'Page not found' });
+    }
+};
+
+// --- Coupon Routes ---
+
+exports.getPublicCoupons = async (req, res) => {
+    try {
+        const { platform, category } = req.query;
+        let where = { status: 'active', expiryDate: { gt: new Date() } }; // Active, not expired
+
+        if (platform) where.platform = platform;
+        // if (category) where.category = category; // If we add category to coupon later
+
+        const coupons = await prisma.coupon.findMany({
+            where,
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(coupons);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching coupons', error: error.message });
+    }
+};
+
+exports.getCouponDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const coupon = await prisma.coupon.findUnique({ where: { id } });
+
+        if (!coupon) return res.status(404).json({ message: 'Coupon not found' });
+
+        // Hide details if desired? No, coupons usually have code visible or click to reveal
+        res.json(coupon);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching coupon', error: error.message });
     }
 };
