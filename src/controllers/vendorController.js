@@ -42,6 +42,21 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
     return { vendor, wallet };
 };
 
+const createVendorNotification = async ({ vendorId, title, message, type, metadata }) => {
+    if (!vendorId) return null;
+    const vendor = await prisma.vendor.findUnique({ where: { id: vendorId }, select: { userId: true } });
+    if (!vendor?.userId) return null;
+    return prisma.notification.create({
+        data: {
+            userId: vendor.userId,
+            title,
+            message,
+            type,
+            metadata
+        }
+    });
+};
+
 const notifyAdminsAboutPaidOrder = async ({ order, vendor, campaignTitle = 'campaign' }) => {
     if (!order) {
         console.log('[NotifyAdmins] No order provided, skipping notification');
@@ -142,6 +157,13 @@ exports.rechargeWallet = async (req, res) => {
             entityType: 'wallet',
             metadata: { amount: Number(amount) || 0 },
             req
+        });
+        await createVendorNotification({
+            vendorId,
+            title: 'Wallet recharged',
+            message: `Wallet credited by INR ${Number(amount) || 0}.`,
+            type: 'wallet-recharge',
+            metadata: { tab: 'wallet', amount: Number(amount) || 0 }
         });
         res.json({ message: 'Wallet recharged successfully' });
     } catch (error) {
@@ -246,7 +268,15 @@ exports.orderQRs = async (req, res) => {
 
             await tx.qRCode.createMany({ data: qrData });
 
-            return { qrs: qrData, order, vendorId: vendor.id };
+            return {
+                qrs: qrData,
+                order,
+                vendorId: vendor.id,
+                totalCost,
+                totalPrintCost,
+                campaignTitle: campaign.title,
+                quantity: parsedQuantity
+            };
         });
 
         const orderSummary = result?.order
@@ -278,10 +308,24 @@ exports.orderQRs = async (req, res) => {
                 orderId: result.order?.id,
                 quantity: parsedQuantity,
                 cashbackAmount: qrCashback,
-                totalCost,
-                totalPrintCost
+                totalCost: result.totalCost,
+                totalPrintCost: result.totalPrintCost
             },
             req
+        });
+
+        await createVendorNotification({
+            vendorId: result.vendorId,
+            title: 'QRs purchased',
+            message: `Debited INR ${Number(result.totalCost || 0).toFixed(2)} for ${result.quantity} QRs (${result.campaignTitle}).`,
+            type: 'wallet-debit',
+            metadata: {
+                tab: 'wallet',
+                campaignId,
+                orderId: result.order?.id,
+                amount: Number(result.totalCost || 0),
+                quantity: result.quantity
+            }
         });
 
         const vendorProfile = await prisma.vendor.findUnique({
@@ -600,7 +644,7 @@ exports.upsertVendorBrand = async (req, res) => {
 
 exports.updateVendorProfile = async (req, res) => {
     try {
-        const { businessName, contactPhone, gstin, address } = req.body;
+        const { businessName, contactPhone, contactEmail, gstin, address } = req.body;
 
         // Ensure Vendor Exists (or Create it)
         let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -611,6 +655,7 @@ exports.updateVendorProfile = async (req, res) => {
                     userId: req.user.id,
                     businessName: businessName || 'My Company',
                     contactPhone,
+                    contactEmail,
                     gstin,
                     address,
                     status: 'active'
@@ -622,6 +667,7 @@ exports.updateVendorProfile = async (req, res) => {
                 data: {
                     businessName,
                     contactPhone,
+                    contactEmail,
                     gstin,
                     address
                 }
@@ -636,6 +682,7 @@ exports.updateVendorProfile = async (req, res) => {
             metadata: {
                 businessName,
                 contactPhone,
+                contactEmail,
                 gstin,
                 address
             },
@@ -896,6 +943,13 @@ exports.requestCampaign = async (req, res) => {
             },
             req
         });
+        await createVendorNotification({
+            vendorId: brand.vendorId,
+            title: 'Campaign created',
+            message: `Campaign "${title}" created and pending activation.`,
+            type: 'campaign-created',
+            metadata: { tab: 'campaigns', campaignId: campaign.id, brandId }
+        });
         res.status(201).json({ message: 'Campaign created successfully', campaign });
     } catch (error) {
         console.error('Campaign Creation Error:', error);
@@ -1128,22 +1182,27 @@ exports.deleteProduct = async (req, res) => {
 
         if (!product) return res.status(404).json({ message: 'Product not found or unauthorized' });
 
-        // Soft delete (set status to inactive or blocked)
-        // Or hard delete if no dependencies? For safety, let's keep it. 
-        // We'll actually delete for now if no dependency issues, but Prisma might complain if linked?
-        // Product is linked to Brand. No other heavy links yet unless...
-        // Ah, Product might be linked to... nothing transactional yet?
-        // Wait, Transactions link Wallet. QRCodes link Campaign.
-        // Product doesn't have many dependencies yet besides Brand.
+        const campaigns = await prisma.campaign.findMany({
+            where: { productId: id },
+            select: { id: true }
+        });
+        const campaignIds = campaigns.map((campaign) => campaign.id);
 
-        await prisma.product.delete({ where: { id } });
+        await prisma.$transaction(async (tx) => {
+            if (campaignIds.length) {
+                await tx.qRCode.deleteMany({ where: { campaignId: { in: campaignIds } } });
+                await tx.qROrder.deleteMany({ where: { campaignId: { in: campaignIds } } });
+                await tx.campaign.deleteMany({ where: { id: { in: campaignIds } } });
+            }
+            await tx.product.delete({ where: { id } });
+        });
 
         safeLogVendorActivity({
             vendorId: vendor.id,
             action: 'product_delete',
             entityType: 'product',
             entityId: id,
-            metadata: { name: product.name },
+            metadata: { name: product.name, deletedCampaigns: campaignIds.length },
             req
         });
         res.json({ message: 'Product deleted' });
@@ -1162,6 +1221,7 @@ exports.getCampaignStats = async (req, res) => {
         const stats = await prisma.campaign.findMany({
             where: { Brand: { vendorId: vendor.id } }, // All campaigns for this vendor
             select: {
+                id: true,
                 title: true,
                 status: true,
                 totalBudget: true,
@@ -1177,6 +1237,7 @@ exports.getCampaignStats = async (req, res) => {
 
         // Format
         const formatted = stats.map(c => ({
+            id: c.id,
             campaign: c.title,
             status: c.status,
             budget: c.totalBudget,
@@ -1238,10 +1299,39 @@ exports.deleteBrand = async (_req, res) => {
     });
 };
 
-exports.deleteCampaign = async (_req, res) => {
-    res.status(403).json({
-        message: 'Campaign deletion is restricted to administrators'
-    });
+exports.deleteCampaign = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) return res.status(404).json({ message: 'Vendor profile not found' });
+
+        const campaign = await prisma.campaign.findUnique({
+            where: { id },
+            include: { Brand: { select: { vendorId: true } } }
+        });
+
+        if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
+            return res.status(404).json({ message: 'Campaign not found or unauthorized' });
+        }
+
+        await prisma.$transaction(async (tx) => {
+            await tx.qRCode.deleteMany({ where: { campaignId: id } });
+            await tx.campaign.delete({ where: { id } });
+        });
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'campaign_delete',
+            entityType: 'campaign',
+            entityId: id,
+            metadata: { title: campaign.title },
+            req
+        });
+
+        res.json({ message: 'Campaign deleted', campaignId: id });
+    } catch (error) {
+        res.status(500).json({ message: 'Delete failed', error: error.message });
+    }
 };
 
 // --- QR Order Management ---
@@ -1474,6 +1564,19 @@ exports.payOrder = async (req, res) => {
             campaignTitle
         });
 
+        await createVendorNotification({
+            vendorId: vendor.id,
+            title: 'QR order paid',
+            message: `Debited INR ${Number(totalDeduction).toFixed(2)} for QR order #${order.id.slice(-6)} (${campaignTitle}).`,
+            type: 'wallet-debit',
+            metadata: {
+                tab: 'wallet',
+                orderId: order.id,
+                campaignId: order.campaignId,
+                amount: Number(totalDeduction)
+            }
+        });
+
         res.json({
             message: 'Payment successful. Admin will ship QR codes.',
             order: {
@@ -1600,6 +1703,17 @@ exports.payCampaign = async (req, res) => {
             },
             req
         });
+        await createVendorNotification({
+            vendorId: vendor.id,
+            title: 'Campaign activated',
+            message: `Debited INR ${Number(totalCost).toFixed(2)} to activate campaign "${campaign.title}".`,
+            type: 'wallet-debit',
+            metadata: {
+                tab: 'campaigns',
+                campaignId: campaign.id,
+                amount: Number(totalCost)
+            }
+        });
         res.json({ message: 'Campaign payment successful. Campaign is now active.' });
 
     } catch (error) {
@@ -1648,14 +1762,19 @@ exports.downloadOrderQrPdf = async (req, res) => {
         // Get campaign title
         const campaign = await prisma.campaign.findUnique({
             where: { id: order.campaignId },
-            select: { title: true }
+            select: {
+                title: true,
+                Brand: { select: { name: true, logoUrl: true } }
+            }
         });
 
         // Generate PDF
         const pdfBuffer = await generateQrPdf({
             qrCodes: order.QRCodes,
             campaignTitle: campaign?.title || 'Campaign',
-            orderId: order.id
+            orderId: order.id,
+            brandName: campaign?.Brand?.name,
+            brandLogoUrl: campaign?.Brand?.logoUrl
         });
 
         // Send PDF
@@ -1695,7 +1814,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId },
             include: {
-                Brand: { select: { vendorId: true } }
+                Brand: { select: { vendorId: true, name: true, logoUrl: true } }
             }
         });
 
@@ -1762,7 +1881,9 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const pdfBuffer = await generateQrPdf({
             qrCodes,
             campaignTitle: campaign.title,
-            orderId: campaignId
+            orderId: campaignId,
+            brandName: campaign.Brand.name,
+            brandLogoUrl: campaign.Brand.logoUrl
         });
         console.log('[CampaignPDF] PDF generated, size:', pdfBuffer.length);
 
@@ -1786,3 +1907,251 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
     }
 };
+
+// Helper: Mask phone number (e.g., 9876543210 -> 98****3210)
+const maskPhone = (phone) => {
+    if (!phone || phone.length < 6) return '****';
+    return phone.slice(0, 2) + '****' + phone.slice(-4);
+};
+
+// Helper: Mask name (e.g., John Doe -> J***e)
+const maskName = (name) => {
+    if (!name || name.length < 2) return '****';
+    return name[0] + '***' + name.slice(-1);
+};
+
+// B11: Get Vendor Redemptions (Masked Customer Data)
+exports.getVendorRedemptions = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const { page, limit, skip } = parsePagination(req);
+        const { campaignId, startDate, endDate } = req.query;
+
+        // Build filter: Get all redeemed QRs from vendor's campaigns
+        const whereClause = {
+            status: 'redeemed',
+            Campaign: {
+                Brand: { vendorId: vendor.id }
+            }
+        };
+
+        if (campaignId) {
+            whereClause.campaignId = campaignId;
+        }
+
+        if (startDate || endDate) {
+            whereClause.redeemedAt = {};
+            if (startDate) whereClause.redeemedAt.gte = new Date(startDate);
+            if (endDate) whereClause.redeemedAt.lte = new Date(endDate);
+        }
+
+        const [redemptions, total] = await Promise.all([
+            prisma.qRCode.findMany({
+                where: whereClause,
+                skip,
+                take: limit,
+                orderBy: { redeemedAt: 'desc' },
+                include: {
+                    Campaign: {
+                        select: { id: true, title: true }
+                    }
+                }
+            }),
+            prisma.qRCode.count({ where: whereClause })
+        ]);
+
+        const userIds = Array.from(
+            new Set(
+                redemptions
+                    .map((qr) => qr.redeemedByUserId)
+                    .filter((id) => id)
+            )
+        );
+
+        const users = userIds.length
+            ? await prisma.user.findMany({
+                where: { id: { in: userIds } },
+                select: { id: true, name: true, phoneNumber: true }
+            })
+            : [];
+
+        const userMap = new Map(users.map((user) => [user.id, user]));
+
+        // Mask customer data
+        const maskedRedemptions = redemptions.map((qr) => {
+            const user = qr.redeemedByUserId ? userMap.get(qr.redeemedByUserId) : null;
+            return {
+                id: qr.id,
+                uniqueHash: qr.uniqueHash.slice(-8), // Only show last 8 chars
+                cashbackAmount: qr.cashbackAmount,
+                redeemedAt: qr.redeemedAt,
+                campaign: {
+                    id: qr.Campaign?.id,
+                    title: qr.Campaign?.title
+                },
+                customer: {
+                    id: user?.id?.slice(-6),
+                    name: maskName(user?.name),
+                    phone: maskPhone(user?.phoneNumber)
+                }
+            };
+        });
+
+        res.json({
+            redemptions: maskedRedemptions,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'view_redemptions',
+            entityType: 'redemption',
+            metadata: { page, limit, total },
+            req
+        });
+
+    } catch (error) {
+        console.error('[VendorRedemptions] Error:', error);
+        res.status(500).json({ message: 'Failed to fetch redemptions', error: error.message });
+    }
+};
+
+// B13: Create Vendor Support Ticket
+exports.createVendorSupportTicket = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const { subject, message, priority = 'medium' } = req.body;
+
+        if (!subject || !message) {
+            return res.status(400).json({ message: 'Subject and message are required' });
+        }
+
+        const ticket = await prisma.supportTicket.create({
+            data: {
+                userId: req.user.id,
+                subject,
+                message,
+                priority,
+                status: 'open',
+                metadata: {
+                    vendorId: vendor.id,
+                    businessName: vendor.businessName
+                }
+            }
+        });
+
+        // Notify admins
+        const admins = await prisma.user.findMany({
+            where: { role: 'admin' },
+            select: { id: true }
+        });
+
+        if (admins.length) {
+            const notifications = admins.map(admin => ({
+                userId: admin.id,
+                title: 'New Support Ticket',
+                message: `Vendor "${vendor.businessName}" created a support ticket: ${subject}`,
+                type: 'support_ticket',
+                metadata: {
+                    ticketId: ticket.id,
+                    vendorId: vendor.id,
+                    priority
+                }
+            }));
+            await prisma.notification.createMany({ data: notifications });
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Support ticket created',
+            ticket
+        });
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'create_support_ticket',
+            entityType: 'support_ticket',
+            entityId: ticket.id,
+            metadata: { subject, priority },
+            req
+        });
+
+    } catch (error) {
+        console.error('[VendorSupportTicket] Create Error:', error);
+        res.status(500).json({ message: 'Failed to create support ticket', error: error.message });
+    }
+};
+
+// B13: Get Vendor Support Tickets
+exports.getVendorSupportTickets = async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req);
+        const { status } = req.query;
+
+        const whereClause = { userId: req.user.id };
+        if (status) whereClause.status = status;
+
+        const [tickets, total] = await Promise.all([
+            prisma.supportTicket.findMany({
+                where: whereClause,
+                skip,
+                take: limit,
+                orderBy: { createdAt: 'desc' }
+            }),
+            prisma.supportTicket.count({ where: whereClause })
+        ]);
+
+        res.json({
+            tickets,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+
+    } catch (error) {
+        console.error('[VendorSupportTicket] Fetch Error:', error);
+        res.status(500).json({ message: 'Failed to fetch support tickets', error: error.message });
+    }
+};
+
+// B13: Get Customer Brand Inquiries (Notifications)
+exports.getVendorBrandInquiries = async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req);
+        const whereClause = { userId: req.user.id, type: 'brand-inquiry' };
+
+        const [items, total] = await Promise.all([
+            prisma.notification.findMany({
+                where: whereClause,
+                skip,
+                take: limit,
+                orderBy: { createdAt: 'desc' }
+            }),
+            prisma.notification.count({ where: whereClause })
+        ]);
+
+        res.json({
+            items,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error('[VendorBrandInquiries] Fetch Error:', error);
+        res.status(500).json({ message: 'Failed to fetch brand inquiries', error: error.message });
+    }
+};
+
+
+

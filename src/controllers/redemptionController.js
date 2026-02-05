@@ -122,6 +122,29 @@ exports.scanAndRedeem = async (req, res) => {
             req
         });
 
+        if (result.vendorId) {
+            const vendor = await prisma.vendor.findUnique({
+                where: { id: result.vendorId },
+                select: { userId: true, businessName: true }
+            });
+            if (vendor?.userId) {
+                await prisma.notification.create({
+                    data: {
+                        userId: vendor.userId,
+                        title: 'QR redeemed',
+                        message: `Customer redeemed INR ${result.amount} for campaign "${result.campaign?.title || 'Campaign'}".`,
+                        type: 'qr-redeemed',
+                        metadata: {
+                            tab: 'redemptions',
+                            campaignId: result.campaignId,
+                            brandId: result.brandId,
+                            amount: result.amount
+                        }
+                    }
+                });
+            }
+        }
+
         res.json({
             success: true,
             message: `Cashback of INR ${result.amount} sent instantly to ${result.payoutTo}`,

@@ -1,9 +1,10 @@
-generator client {
+﻿generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -49,6 +50,7 @@ model Vendor {
   User              User                @relation(fields: [userId], references: [id])
   VendorActivityLog VendorActivityLog[]
   Wallet            Wallet?
+  SupportTickets    SupportTicket[]
 }
 
 model Brand {
@@ -276,6 +278,21 @@ model Coupon {
   updatedAt         DateTime @updatedAt
 }
 
+model SystemSettings {
+  id                String   @id @default("default")
+  techFeePerQr      Decimal  @default(1.00) @db.Decimal(10, 2)
+  minPayoutAmount   Decimal  @default(100.00) @db.Decimal(10, 2)
+  maxDailyPayout    Decimal  @default(10000.00) @db.Decimal(12, 2)
+  qrExpiryDays      Int      @default(365)
+  platformName      String   @default("Assured Rewards")
+  supportEmail      String   @default("support@assuredrewards.com")
+  termsUrl          String?
+  privacyUrl        String?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
 model ActivityLog {
   id          String    @id
   actorUserId String?
@@ -406,4 +423,42 @@ enum CredentialRequestStatus {
   pending
   approved
   rejected
+}
+
+model SupportTicket {
+  id        String   @id @default(uuid())
+  vendorId  String
+  userId    String
+  subject   String
+  message   String
+  status    TicketStatus @default(open)
+  priority  TicketPriority @default(medium)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  Vendor    Vendor   @relation(fields: [vendorId], references: [id])
+  User      User     @relation(fields: [userId], references: [id])
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  resolved
+  closed
+}
+
+enum TicketPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+model SystemSettings {
+  id              String   @id @default(uuid())
+  techFeePercentage Decimal @default(2.00) @db.Decimal(5, 2)
+  minWithdrawalLimit Decimal @default(500.00) @db.Decimal(10, 2)
+  qrExpiryHours   Int      @default(24)
+  maintenanceMode Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
 }

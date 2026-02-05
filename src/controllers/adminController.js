@@ -1486,6 +1486,18 @@ exports.adjustWalletBalance = async (req, res) => {
             req
         });
 
+        if (vendor?.userId) {
+            await prisma.notification.create({
+                data: {
+                    userId: vendor.userId,
+                    title: `Wallet ${normalizedType === 'debit' ? 'debited' : 'credited'}`,
+                    message: `Admin ${normalizedType === 'debit' ? 'debited' : 'credited'} INR ${parsedAmount}. ${String(description).trim()}`,
+                    type: 'wallet-adjustment',
+                    metadata: { tab: 'wallet', amount: parsedAmount, type: normalizedType }
+                }
+            });
+        }
+
         res.json({ message: 'Wallet adjusted successfully', data: result });
     } catch (error) {
         res.status(500).json({ message: 'Adjustment failed', error: error.message });
@@ -2368,5 +2380,140 @@ exports.getCampaignAnalytics = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching campaign analytics', error: error.message });
+    }
+};
+
+// --- C8: System Settings ---
+
+exports.getSystemSettings = async (req, res) => {
+    try {
+        let settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' }
+        });
+
+        // Create default settings if not exists
+        if (!settings) {
+            settings = await prisma.systemSettings.create({
+                data: { id: 'default' }
+            });
+        }
+
+        res.json(settings);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching system settings', error: error.message });
+    }
+};
+
+exports.updateSystemSettings = async (req, res) => {
+    try {
+        const {
+            techFeePerQr,
+            minPayoutAmount,
+            maxDailyPayout,
+            qrExpiryDays,
+            platformName,
+            supportEmail,
+            termsUrl,
+            privacyUrl,
+            metadata
+        } = req.body;
+
+        const data = {};
+        if (techFeePerQr !== undefined) data.techFeePerQr = parseFloat(techFeePerQr);
+        if (minPayoutAmount !== undefined) data.minPayoutAmount = parseFloat(minPayoutAmount);
+        if (maxDailyPayout !== undefined) data.maxDailyPayout = parseFloat(maxDailyPayout);
+        if (qrExpiryDays !== undefined) data.qrExpiryDays = parseInt(qrExpiryDays);
+        if (platformName !== undefined) data.platformName = platformName;
+        if (supportEmail !== undefined) data.supportEmail = supportEmail;
+        if (termsUrl !== undefined) data.termsUrl = termsUrl;
+        if (privacyUrl !== undefined) data.privacyUrl = privacyUrl;
+        if (metadata !== undefined) data.metadata = metadata;
+
+        if (!Object.keys(data).length) {
+            return res.status(400).json({ message: 'No settings updates provided' });
+        }
+
+        const settings = await prisma.systemSettings.upsert({
+            where: { id: 'default' },
+            create: { id: 'default', ...data },
+            update: data
+        });
+
+        safeLogActivity({
+            actorUserId: req.user?.id,
+            actorRole: req.user?.role,
+            action: 'system_settings_update',
+            entityType: 'system_settings',
+            entityId: 'default',
+            metadata: data,
+            req
+        });
+
+        res.json({ message: 'System settings updated', settings });
+    } catch (error) {
+        res.status(500).json({ message: 'Error updating system settings', error: error.message });
+    }
+};
+
+// --- C9: Activity Logs (Audit) ---
+
+exports.getActivityLogs = async (req, res) => {
+    try {
+        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 200 });
+        const { action, actorRole, vendorId, brandId, campaignId, startDate, endDate } = req.query;
+
+        const where = {};
+        if (action) where.action = { contains: action, mode: 'insensitive' };
+        if (actorRole) where.actorRole = actorRole;
+        if (vendorId) where.vendorId = vendorId;
+        if (brandId) where.brandId = brandId;
+        if (campaignId) where.campaignId = campaignId;
+        if (startDate || endDate) {
+            where.createdAt = {};
+            if (startDate) where.createdAt.gte = new Date(startDate);
+            if (endDate) where.createdAt.lte = new Date(endDate);
+        }
+
+        const [logs, total] = await Promise.all([
+            prisma.activityLog.findMany({
+                where,
+                orderBy: { createdAt: 'desc' },
+                skip,
+                take: limit,
+                include: {
+                    User: { select: { name: true, email: true, role: true } },
+                    Vendor: { select: { businessName: true } },
+                    Brand: { select: { name: true } },
+                    Campaign: { select: { title: true } }
+                }
+            }),
+            prisma.activityLog.count({ where })
+        ]);
+
+        // Get action summary for filters
+        const actionGroups = await prisma.activityLog.groupBy({
+            by: ['action'],
+            _count: { _all: true },
+            orderBy: { _count: { action: 'desc' } },
+            take: 20
+        });
+
+        const actionCounts = actionGroups.reduce((acc, row) => {
+            acc[row.action] = row._count._all;
+            return acc;
+        }, {});
+
+        res.json({
+            logs,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            },
+            actionCounts
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching activity logs', error: error.message });
     }
 };

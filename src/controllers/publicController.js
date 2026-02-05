@@ -173,6 +173,60 @@ exports.getBrandDetails = async (req, res) => {
     }
 };
 
+// --- Brand Inquiry (Public) ---
+exports.createBrandInquiry = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, email, phone, message } = req.body || {};
+        const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+
+        if (!trimmedMessage) {
+            return res.status(400).json({ message: 'Message is required' });
+        }
+
+        const brand = await prisma.brand.findUnique({
+            where: { id },
+            include: {
+                Vendor: { select: { id: true, userId: true, businessName: true } }
+            }
+        });
+
+        if (!brand) {
+            return res.status(404).json({ message: 'Brand not found' });
+        }
+
+        if (!brand.Vendor?.userId) {
+            return res.status(404).json({ message: 'Brand does not have a vendor assigned' });
+        }
+
+        const customerName = typeof name === 'string' ? name.trim() : '';
+        const customerEmail = typeof email === 'string' ? email.trim() : '';
+        const customerPhone = typeof phone === 'string' ? phone.trim() : '';
+
+        await prisma.notification.create({
+            data: {
+                userId: brand.Vendor.userId,
+                title: `New customer query${brand.name ? ` - ${brand.name}` : ''}`,
+                message: trimmedMessage,
+                type: 'brand-inquiry',
+                metadata: {
+                    tab: 'support',
+                    brandId: brand.id,
+                    brandName: brand.name,
+                    customerName: customerName || null,
+                    customerEmail: customerEmail || null,
+                    customerPhone: customerPhone || null
+                }
+            }
+        });
+
+        res.status(201).json({ message: 'Your query has been sent to the brand.' });
+    } catch (error) {
+        console.error('[BrandInquiry] Error:', error);
+        res.status(500).json({ message: 'Failed to send query', error: error.message });
+    }
+};
+
 
 exports.getGiftCardCategories = (_req, res) => {
     res.json(giftCardCategories);

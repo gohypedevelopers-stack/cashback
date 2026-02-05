@@ -14,7 +14,8 @@ const {
     getPendingWithdrawals, processWithdrawal,
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
     getAllOrders, updateOrderStatus,
-    deleteCampaign
+    deleteCampaign,
+    getSystemSettings, updateSystemSettings, getActivityLogs
 } = require('../controllers/adminController');
 
 const {
@@ -103,4 +104,12 @@ router.get('/notifications', getNotifications);
 router.get('/orders', getAllOrders);
 router.put('/orders/:id/status', updateOrderStatus);
 
+// C8: System Settings
+router.get('/settings', getSystemSettings);
+router.put('/settings', updateSystemSettings);
+
+// C9: Activity Logs (Audit)
+router.get('/activity-logs', getActivityLogs);
+
 module.exports = router;
+

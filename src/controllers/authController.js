@@ -289,6 +289,93 @@ exports.verifyOtp = async (req, res) => {
     }
 };
 
+exports.sendEmailOtp = async (req, res) => {
+    const { email } = req.body || {};
+
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    try {
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const otp = generateOTP();
+        const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                otp,
+                otpExpires
+            }
+        });
+
+        // Mock Send Email
+        console.log(`[EMAIL DEV] OTP for ${normalizedEmail}: ${otp}`);
+
+        res.json({
+            success: true,
+            message: 'OTP sent successfully',
+            otp
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.resetPasswordWithOtp = async (req, res) => {
+    const { email, otp, password } = req.body || {};
+
+    if (!email || !otp || !password) {
+        return res.status(400).json({ message: 'Email, OTP and new password are required' });
+    }
+
+    if (String(password).length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        const normalizedEmail = String(email).trim().toLowerCase();
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        if (!user.otp || user.otp !== String(otp)) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        if (!user.otpExpires || new Date() > user.otpExpires) {
+            return res.status(400).json({ message: 'OTP expired' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                password: hashedPassword,
+                otp: null,
+                otpExpires: null,
+                resetPasswordToken: null,
+                resetPasswordExpires: null
+            }
+        });
+
+        res.json({ success: true, message: 'Password updated successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error resetting password', error: error.message });
+    }
+};
+
 exports.forgotPassword = async (req, res) => {
     const { email } = req.body;
 
@@ -371,7 +458,6 @@ exports.resetPassword = async (req, res) => {
     }
 };
 
-// Set Password for Logged-In User (who may not have a password yet)
 exports.setPassword = async (req, res) => {
     const { password } = req.body;
 
@@ -391,5 +477,142 @@ exports.setPassword = async (req, res) => {
         res.json({ success: true, message: 'Password set successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Error setting password', error: error.message });
+    }
+};
+
+// Vendor Self-Registration
+exports.registerVendor = async (req, res) => {
+    const { ownerName, brandName, category, mobile, email, password, city, state, website } = req.body;
+
+    // Validation
+    if (!ownerName || !brandName || !email || !password) {
+        return res.status(400).json({
+            message: 'Owner name, brand name, email, and password are required'
+        });
+    }
+
+    if (password.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        // Check if email already exists
+        const existingUser = await prisma.user.findUnique({ where: { email } });
+        if (existingUser) {
+            return res.status(400).json({ message: 'Email already registered' });
+        }
+
+        // Check if phone already exists (if provided)
+        if (mobile) {
+            const existingPhone = await prisma.user.findUnique({ where: { phoneNumber: mobile } });
+            if (existingPhone) {
+                return res.status(400).json({ message: 'Phone number already registered' });
+            }
+        }
+
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Create User, Vendor, Wallet, and Brand in a transaction
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Create User with vendor role (status: active, but vendor/brand are pending)
+            const user = await tx.user.create({
+                data: {
+                    name: ownerName,
+                    email,
+                    phoneNumber: mobile || null,
+                    password: hashedPassword,
+                    role: 'vendor',
+                    status: 'active'
+                }
+            });
+
+            // 2. Create Vendor Profile (status: pending - needs admin approval)
+            const vendor = await tx.vendor.create({
+                data: {
+                    userId: user.id,
+                    businessName: brandName,
+                    contactPhone: mobile || null,
+                    contactEmail: email,
+                    address: city && state ? `${city}, ${state}` : city || state || null,
+                    status: 'pending'
+                }
+            });
+
+            // 3. Create Wallet with 0 balance
+            const wallet = await tx.wallet.create({
+                data: {
+                    vendorId: vendor.id,
+                    balance: 0.00,
+                    currency: 'INR'
+                }
+            });
+
+            // 4. Create Brand (status: pending - needs admin approval)
+            const brand = await tx.brand.create({
+                data: {
+                    name: brandName,
+                    vendorId: vendor.id,
+                    website: website || null,
+                    status: 'pending'
+                }
+            });
+
+            // 5. Notify Admins about new vendor registration
+            const admins = await tx.user.findMany({
+                where: { role: 'admin' },
+                select: { id: true }
+            });
+
+            if (admins.length) {
+                const notifications = admins.map(admin => ({
+                    userId: admin.id,
+                    title: 'New Vendor Registration',
+                    message: `${ownerName} has registered as a vendor with brand "${brandName}". Please review and activate.`,
+                    type: 'vendor_registration',
+                    metadata: {
+                        vendorId: vendor.id,
+                        brandId: brand.id,
+                        ownerName,
+                        brandName,
+                        email,
+                        mobile
+                    }
+                }));
+                await tx.notification.createMany({ data: notifications });
+            }
+
+            return { user, vendor, wallet, brand };
+        });
+
+        safeLogActivity({
+            actorUserId: result.user.id,
+            actorRole: 'vendor',
+            vendorId: result.vendor.id,
+            brandId: result.brand.id,
+            action: 'vendor_self_register',
+            entityType: 'vendor',
+            entityId: result.vendor.id,
+            metadata: {
+                ownerName,
+                brandName,
+                email,
+                city,
+                state
+            },
+            req
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Registration successful! Your account is pending admin approval. You will be notified once activated.',
+            vendorId: result.vendor.id,
+            brandId: result.brand.id
+        });
+
+    } catch (error) {
+        console.error('Vendor Registration Error:', error);
+        res.status(500).json({ message: 'Registration failed', error: error.message });
     }
 };

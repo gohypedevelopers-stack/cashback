@@ -1,5 +1,8 @@
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * Generate a PDF with QR codes for an order
@@ -7,9 +10,11 @@ const QRCode = require('qrcode');
  * @param {Array} options.qrCodes - Array of QR code objects with uniqueHash, cashbackAmount
  * @param {string} options.campaignTitle - Campaign name
  * @param {string} options.orderId - Order ID
+ * @param {string} [options.brandName] - Brand Name
+ * @param {string} [options.brandLogoUrl] - Brand Logo URL
  * @returns {Promise<Buffer>} PDF buffer
  */
-async function generateQrPdf({ qrCodes, campaignTitle, orderId }) {
+async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brandLogoUrl }) {
     return new Promise(async (resolve, reject) => {
         try {
             const doc = new PDFDocument({
@@ -23,21 +28,66 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId }) {
             doc.on('end', () => resolve(Buffer.concat(chunks)));
             doc.on('error', reject);
 
-            // Header
-            doc.fontSize(18).font('Helvetica-Bold').text('QR Code Sheet', { align: 'center' });
-            doc.fontSize(12).font('Helvetica').text(`Campaign: ${campaignTitle}`, { align: 'center' });
+            let brandLogoBuffer = null;
+            if (brandLogoUrl) {
+                try {
+                    const response = await axios.get(brandLogoUrl, { responseType: 'arraybuffer' });
+                    brandLogoBuffer = response.data;
+                } catch (err) {
+                    console.error('Failed to fetch brand logo for PDF:', err.message);
+                }
+            }
+
+            // --- Header Section ---
+            let yPos = 30;
+
+            // 1. Platform Branding (Assured Rewards)
+            // Try to load local platform logo
+            // Assuming the backend is running from cashback/src/index.js, so up two dirs to root of backend, then... 
+            // wait, the 'public' folder found was in e:\webapp\public. Backend is in e:\webapp\cashback backend\cashback.
+            // If the backend doesn't have access to the frontend public folder easily, we might fallback to text or need a hardcoded path.
+            // Let's rely on text "Assured Rewards" primarily and try to load logo if possible, but path might be tricky across environments.
+            // For now, I'll use a bold text header for "Assured Rewards".
+
+            doc.fontSize(24).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', { align: 'center' }); // Emerald-500 color
+            doc.fillColor('black'); // Reset
+            yPos += 35;
+
+            // 2. Brand Branding
+            if (brandLogoBuffer) {
+                const logoWidth = 60;
+                doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
+                yPos += 70;
+            } else if (brandName) {
+                doc.fontSize(18).font('Helvetica-Bold').text(brandName, { align: 'center' });
+                yPos += 25;
+            }
+
+            if (brandLogoBuffer && brandName) {
+                doc.fontSize(16).font('Helvetica-Bold').text(brandName, { align: 'center' });
+                yPos += 20;
+            }
+
+            doc.fontSize(14).font('Helvetica-Bold').text('QR Code Sheet', 30, yPos, { width: doc.page.width - 60, align: 'center' });
+            yPos += 20;
+
+            doc.fontSize(10).font('Helvetica').text(`Campaign: ${campaignTitle}`, { align: 'center' });
+            yPos += 15;
+
             doc.text(`Order ID: ${orderId.slice(-8)}`, { align: 'center' });
+            yPos += 15;
+
             doc.text(`Total QR Codes: ${qrCodes.length}`, { align: 'center' });
-            doc.moveDown(1);
+            yPos += 25; // Space before grid
 
             // Grid settings
+            const startY = yPos;
             const qrSize = 80;
             const labelHeight = 35;
             const cellWidth = 100;
             const cellHeight = qrSize + labelHeight + 10;
             const cols = 5;
             const startX = 30;
-            const startY = 130;
             const pageHeight = 780;
 
             let currentX = startX;
@@ -75,8 +125,10 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId }) {
                     width: cellWidth,
                     align: 'center'
                 });
+
+                // Using 'Helvetica-Bold' which doesn't support '₹'. Changed to 'Rs. '
                 doc.fontSize(9).font('Helvetica-Bold');
-                doc.text(`₹${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
+                doc.text(`Rs. ${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
                     width: cellWidth,
                     align: 'center'
                 });

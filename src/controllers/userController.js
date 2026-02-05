@@ -105,12 +105,46 @@ exports.getTransactionHistory = async (req, res) => {
 
 exports.updateUserProfile = async (req, res) => {
     try {
-        const { name, email } = req.body;
+        const { name, email, username, phoneNumber } = req.body || {};
+
+        const updates = {};
+        if (typeof name === 'string') updates.name = name.trim() || null;
+        if (typeof email === 'string') updates.email = email.trim().toLowerCase() || null;
+        if (typeof username === 'string') updates.username = username.trim() || null;
+        if (typeof phoneNumber === 'string') updates.phoneNumber = phoneNumber.trim() || null;
+
+        if (!Object.keys(updates).length) {
+            return res.status(400).json({ message: 'No profile updates provided' });
+        }
+
+        if (updates.email) {
+            const existing = await prisma.user.findUnique({ where: { email: updates.email } });
+            if (existing && existing.id !== req.user.id) {
+                return res.status(400).json({ message: 'Email already in use' });
+            }
+        }
+
+        if (updates.username) {
+            const existing = await prisma.user.findUnique({ where: { username: updates.username } });
+            if (existing && existing.id !== req.user.id) {
+                return res.status(400).json({ message: 'Username already in use' });
+            }
+        }
+
+        if (updates.phoneNumber) {
+            const existing = await prisma.user.findUnique({ where: { phoneNumber: updates.phoneNumber } });
+            if (existing && existing.id !== req.user.id) {
+                return res.status(400).json({ message: 'Phone number already in use' });
+            }
+        }
+
         const user = await prisma.user.update({
             where: { id: req.user.id },
-            data: { name, email }
+            data: updates
         });
-        res.json({ message: 'Profile updated', user });
+
+        const { password, otp, otpExpires, resetPasswordToken, resetPasswordExpires, ...safeUser } = user;
+        res.json({ message: 'Profile updated', user: safeUser });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
     }

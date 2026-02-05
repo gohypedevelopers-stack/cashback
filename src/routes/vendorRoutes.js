@@ -35,7 +35,11 @@ const {
     payOrder,
     payCampaign,
     downloadOrderQrPdf,
-    downloadCampaignQrPdf
+    downloadCampaignQrPdf,
+    getVendorRedemptions,
+    createVendorSupportTicket,
+    getVendorSupportTickets,
+    getVendorBrandInquiries
 } = require('../controllers/vendorController');
 
 router.use(protect);
@@ -65,6 +69,11 @@ router.delete('/brands/:id', deleteBrand);
 router.get('/dashboard', getDashboardStats);
 router.get('/transactions', getVendorTransactions);
 
+// Support Tickets (Open - vendor can always contact support)
+router.get('/support', getVendorSupportTickets);
+router.post('/support', createVendorSupportTicket);
+router.get('/brand-inquiries', getVendorBrandInquiries);
+
 // --- RESTRICTED ROUTES (Requires Active Subscription) ---
 const restrictedRouter = express.Router();
 restrictedRouter.use(requireActiveSubscription);
@@ -79,6 +88,9 @@ restrictedRouter.get('/orders', getVendorOrders);
 restrictedRouter.post('/orders', createOrder);
 restrictedRouter.post('/orders/:orderId/pay', payOrder);
 restrictedRouter.get('/orders/:orderId/download', downloadOrderQrPdf);
+
+// Redemptions (B11 - Customer Data)
+restrictedRouter.get('/redemptions', getVendorRedemptions);
 
 // Campaign Management
 restrictedRouter.get('/campaigns', getVendorCampaigns);

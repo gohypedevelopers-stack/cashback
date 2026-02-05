@@ -179,8 +179,9 @@ exports.getWithdrawalHistory = async (req, res) => {
 
         // Find Wallet (same logic as above)
         let wallet = await prisma.wallet.findUnique({ where: { userId } });
+        let vendor = null;
         if (!wallet) {
-            const vendor = await prisma.vendor.findUnique({ where: { userId } });
+            vendor = await prisma.vendor.findUnique({ where: { userId } });
             if (vendor) {
                 wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
             }
@@ -216,8 +217,12 @@ exports.createOrder = async (req, res) => {
         const order = await razorpay.orders.create(options);
         res.json(order);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Something went wrong", error: error.message });
+        console.error("[Razorpay Error]", error);
+        const statusCode = error.statusCode || 500;
+        const message = error.error && error.error.description
+            ? error.error.description
+            : (error.message || "Something went wrong");
+        res.status(statusCode).json({ message, error: message });
     }
 };
 
@@ -232,56 +237,66 @@ exports.verifyPayment = async (req, res) => {
             .update(body.toString())
             .digest('hex');
 
-        if (expectedSignature === razorpay_signature) {
+        if (expectedSignature !== razorpay_signature) {
+            return res.status(400).json({ message: "Invalid signature", success: false });
+        }
 
-            // Fetch order to get exact amount (Secure)
-            const order = await razorpay.orders.fetch(razorpay_order_id);
-            const amountInRupees = order.amount / 100;
+        // Fetch order to get exact amount (Secure)
+        const order = await razorpay.orders.fetch(razorpay_order_id);
+        const amountInRupees = order.amount / 100;
 
-            // Find Wallet
-            let wallet = await prisma.wallet.findUnique({ where: { userId } });
-            if (!wallet) {
-                const vendor = await prisma.vendor.findUnique({ where: { userId } });
-                if (vendor) {
-                    wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
+        // Find Wallet
+        let wallet = await prisma.wallet.findUnique({ where: { userId } });
+        if (!wallet) {
+            const vendor = await prisma.vendor.findUnique({ where: { userId } });
+            if (vendor) {
+                wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
+            }
+        }
+
+        if (!wallet) {
+            // Auto-create wallet if not exists
+            wallet = await prisma.wallet.create({
+                data: {
+                    userId: userId,
+                    balance: 0,
+                    currency: 'INR'
                 }
-            }
+            });
+        }
 
-            if (!wallet) {
-                // Auto-create wallet if not exists
-                wallet = await prisma.wallet.create({
-                    data: {
-                        userId: userId,
-                        balance: 0,
-                        currency: 'INR'
-                    }
-                });
-            }
-
-            // Atomic Transaction
-            await prisma.$transaction(async (tx) => {
-                await tx.wallet.update({
-                    where: { id: wallet.id },
-                    data: { balance: { increment: amountInRupees } }
-                });
-
-                await tx.transaction.create({
-                    data: {
-                        walletId: wallet.id,
-                        type: 'credit',
-                        amount: amountInRupees,
-                        category: 'recharge', // Ensure 'recharge' is in enum
-                        status: 'success',
-                        referenceId: razorpay_payment_id,
-                        description: `Razorpay Recharge`
-                    }
-                });
+        // Atomic Transaction
+        await prisma.$transaction(async (tx) => {
+            await tx.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { increment: amountInRupees } }
             });
 
-            res.json({ message: "Payment verified successfully", success: true });
-        } else {
-            res.status(400).json({ message: "Invalid signature", success: false });
-        }
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'credit',
+                    amount: amountInRupees,
+                    category: 'recharge', // Ensure 'recharge' is in enum
+                    status: 'success',
+                    referenceId: razorpay_payment_id,
+                    description: "Razorpay Recharge"
+                }
+            });
+        });
+
+        await prisma.notification.create({
+            data: {
+                userId,
+                title: "Wallet recharged",
+                message: `Wallet credited by INR ${amountInRupees}.`,
+                type: "wallet-recharge",
+                metadata: { tab: "wallet", amount: amountInRupees, isVendor: Boolean(vendor) }
+            }
+        });
+
+        res.json({ message: "Payment verified successfully", success: true });
+
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal Server Error", error: error.message });
