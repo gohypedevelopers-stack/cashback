@@ -2036,12 +2036,7 @@ exports.createVendorSupportTicket = async (req, res) => {
                 userId: req.user.id,
                 subject,
                 message,
-                priority,
-                status: 'open',
-                metadata: {
-                    vendorId: vendor.id,
-                    businessName: vendor.businessName
-                }
+                status: 'open'
             }
         });
 

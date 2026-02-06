@@ -1,4 +1,4 @@
-const giftCardCategories = [
+﻿const giftCardCategories = [
     { id: 'shopping', name: 'Shopping', iconId: 'shopping', iconColor: 'text-yellow-600', bg: 'bg-yellow-100' },
     { id: 'grocery', name: 'Grocery', iconId: 'grocery', iconColor: 'text-green-600', bg: 'bg-green-100' },
     { id: 'travel', name: 'Travel', iconId: 'travel', iconColor: 'text-primary-strong', bg: 'bg-primary/15' },
@@ -13,7 +13,7 @@ const giftCards = [
         name: 'Aeropostale E-Gift Card',
         discount: '7.5%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/F3F4F6/111827?text=A',
+        logo: '/placeholder.svg',
         minAmount: 250,
         maxAmount: 50000,
         validityDays: 180,
@@ -34,7 +34,7 @@ const giftCards = [
         name: 'AJIO E-Gift Card',
         discount: '4.5%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/111827/FBBF24?text=AJIO',
+        logo: '/placeholder.svg',
         minAmount: 250,
         maxAmount: 50000,
         validityDays: 365,
@@ -53,7 +53,7 @@ const giftCards = [
         name: 'Allen Solly E-Gift Card',
         discount: '1.5%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/111827/E5E7EB?text=AS',
+        logo: '/placeholder.svg',
         minAmount: 500,
         maxAmount: 50000,
         validityDays: 365,
@@ -72,7 +72,7 @@ const giftCards = [
         name: 'Amazon Pay E-Gift Card',
         discount: '1%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/1F2937/F9FAFB?text=AMZ',
+        logo: '/placeholder.svg',
         minAmount: 10,
         maxAmount: 100000,
         validityDays: 365,
@@ -91,7 +91,7 @@ const giftCards = [
         name: 'Amazon Shopping Vouchers',
         discount: '2.5%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/1F2937/F59E0B?text=AMZ',
+        logo: '/placeholder.svg',
         minAmount: 100,
         maxAmount: 100000,
         validityDays: 365,
@@ -110,7 +110,7 @@ const giftCards = [
         name: 'American Eagle E-Gift Card',
         discount: '1.5%',
         categoryId: 'shopping',
-        logo: 'https://via.placeholder.com/56x40/0F172A/FFFFFF?text=AE',
+        logo: '/placeholder.svg',
         minAmount: 500,
         maxAmount: 50000,
         validityDays: 365,
@@ -129,7 +129,7 @@ const giftCards = [
         name: 'BigBasket E-Gift Card',
         discount: '2%',
         categoryId: 'grocery',
-        logo: 'https://via.placeholder.com/56x40/16A34A/F0FDF4?text=BB',
+        logo: '/placeholder.svg',
         minAmount: 250,
         maxAmount: 20000,
         validityDays: 180,
@@ -148,7 +148,7 @@ const giftCards = [
         name: 'Uber Gift Card',
         discount: '2%',
         categoryId: 'travel',
-        logo: 'https://via.placeholder.com/56x40/111827/F3F4F6?text=UB',
+        logo: '/placeholder.svg',
         minAmount: 200,
         maxAmount: 10000,
         validityDays: 365,
@@ -229,7 +229,7 @@ const storeProducts = [
         points: 500,
         category: 'Popular',
         description: 'Active noise cancellation, long battery life.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
     {
         id: 'smart-watch',
@@ -237,7 +237,7 @@ const storeProducts = [
         points: 1000,
         category: 'Popular',
         description: 'Heart-rate monitoring, AMOLED panel.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
     {
         id: 'power-bank',
@@ -245,7 +245,7 @@ const storeProducts = [
         points: 300,
         category: 'Entertainment',
         description: '18W fast charging with dual USB ports.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
     {
         id: 'bluetooth',
@@ -253,7 +253,7 @@ const storeProducts = [
         points: 450,
         category: 'Entertainment',
         description: 'Water-resistant, room-filling sound.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
     {
         id: 'travel-kit',
@@ -261,7 +261,7 @@ const storeProducts = [
         points: 650,
         category: 'Travel',
         description: 'Neck pillow, eye mask and carry pouch.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
     {
         id: 'camera',
@@ -269,7 +269,7 @@ const storeProducts = [
         points: 1200,
         category: 'Shopping',
         description: 'Capture moments with retro charm.',
-        image: 'https://placehold.co/100x100',
+        image: '/placeholder.svg',
     },
 ];
 
@@ -281,3 +281,4 @@ module.exports = {
     vouchers,
     storeProducts,
 };
+

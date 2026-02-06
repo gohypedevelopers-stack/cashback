@@ -54,20 +54,39 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
-    const { email, password, username } = req.body;
+    const { email, password, username, emailOrUsername } = req.body;
 
-    if (!email && !username) {
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+    const trimmedLogin = typeof emailOrUsername === 'string' ? emailOrUsername.trim() : '';
+
+    const loginEmail = normalizedEmail || (trimmedLogin.includes('@') ? trimmedLogin.toLowerCase() : '');
+    const loginUsername = normalizedUsername || (!trimmedLogin.includes('@') ? trimmedLogin : '');
+
+    if (!loginEmail && !loginUsername) {
         return res.status(400).json({ message: 'Email or username is required' });
+    }
+    if (typeof password !== 'string' || !password.trim()) {
+        return res.status(400).json({ message: 'Password is required' });
     }
 
     try {
         let user = null;
-        if (email) {
-            user = await prisma.user.findUnique({ where: { email } });
+        if (loginEmail) {
+            user = await prisma.user.findUnique({ where: { email: loginEmail } });
         }
 
-        if (!user && username) {
-            user = await prisma.user.findUnique({ where: { username } });
+        if (!user && loginUsername) {
+            user = await prisma.user.findUnique({ where: { username: loginUsername } });
+        }
+
+        // Allow vendor login using actual vendor id from onboarding response.
+        if (!user && loginUsername) {
+            const vendorAccount = await prisma.vendor.findUnique({
+                where: { id: loginUsername },
+                include: { User: true }
+            });
+            user = vendorAccount?.User || null;
         }
 
         if (!user) {
@@ -132,7 +151,7 @@ exports.login = async (req, res) => {
                 action: 'vendor_login',
                 entityType: 'vendor',
                 entityId: vendor.id,
-                metadata: { identifier: email || username },
+                metadata: { identifier: loginEmail || loginUsername },
                 req
             });
         }
@@ -156,7 +175,7 @@ exports.login = async (req, res) => {
             entityType: 'user',
             entityId: user.id,
             metadata: {
-                identifier: email || username
+                identifier: loginEmail || loginUsername
             },
             req
         });

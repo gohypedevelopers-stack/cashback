@@ -1,4 +1,4 @@
-const prisma = require('../config/prismaClient');
+﻿const prisma = require('../config/prismaClient');
 const bcrypt = require('bcryptjs');
 
 exports.getDashboard = async (req, res) => {
@@ -346,8 +346,8 @@ exports.getHomeData = async (req, res) => {
 
         // Mocking Banners for now (could be dynamic in future)
         const banners = [
-            { id: 1, title: "Join the Cashback Revolution", subtitle: "Scan & Earn Instantly", bg: "bg-teal-900", img: "https://via.placeholder.com/100" },
-            { id: 2, title: "Trusted Brands Only", subtitle: "100% Authentic Products", bg: "bg-blue-900", img: "https://via.placeholder.com/100" }
+            { id: 1, title: "Join the Cashback Revolution", subtitle: "Scan & Earn Instantly", bg: "bg-teal-900", img: "/placeholder.svg" },
+            { id: 2, title: "Trusted Brands Only", subtitle: "100% Authentic Products", bg: "bg-blue-900", img: "/placeholder.svg" }
         ];
 
         // Featured Products (Latest 4)
@@ -414,10 +414,11 @@ exports.getProductDetails = async (req, res) => {
 
         res.json({
             ...product,
-            reward: activeCampaign ? `Up to ₹${activeCampaign.cashbackAmount}` : 'Check App',
+            reward: activeCampaign ? `Up to â‚¹${activeCampaign.cashbackAmount}` : 'Check App',
             scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
         });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching product', error: error.message });
     }
 };
+

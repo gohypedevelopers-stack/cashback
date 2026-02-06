@@ -1,4 +1,4 @@
-const prisma = require('../config/prismaClient');
+﻿const prisma = require('../config/prismaClient');
 const { giftCardCategories, giftCards, storeTabs, storeCategories, vouchers, storeProducts } = require('../data/publicCatalog');
 
 // --- Home Data (Universal) ---
@@ -12,8 +12,8 @@ exports.getHomeData = async (req, res) => {
 
         // Mock Banners (Move to DB if needed later)
         const banners = [
-            { id: 1, title: "Get Upto ₹15000 on Scanning Products", subtitle: "From Double Tiger Tea", bg: "bg-teal-900", img: "https://via.placeholder.com/100" },
-            { id: 2, title: "Win Gold Coins Daily", subtitle: "Scan Heritage Milk Packs", bg: "bg-blue-900", img: "https://via.placeholder.com/100" }
+            { id: 1, title: "Get Upto â‚¹15000 on Scanning Products", subtitle: "From Double Tiger Tea", bg: "bg-teal-900", img: "/placeholder.svg" },
+            { id: 2, title: "Win Gold Coins Daily", subtitle: "Scan Heritage Milk Packs", bg: "bg-blue-900", img: "/placeholder.svg" }
         ];
 
         // Featured Products
@@ -86,7 +86,7 @@ exports.getProductDetails = async (req, res) => {
 
         res.json({
             ...product,
-            reward: activeCampaign ? `Up to ₹${activeCampaign.cashbackAmount}` : 'Check App',
+            reward: activeCampaign ? `Up to â‚¹${activeCampaign.cashbackAmount}` : 'Check App',
             scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
         });
     } catch (error) {
@@ -329,3 +329,4 @@ exports.getCouponDetails = async (req, res) => {
         res.status(500).json({ message: 'Error fetching coupon', error: error.message });
     }
 };
+
