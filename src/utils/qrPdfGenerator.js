@@ -4,6 +4,15 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
+const getQrBaseUrl = () => {
+    const base =
+        process.env.QR_BASE_URL ||
+        process.env.FRONTEND_URL ||
+        process.env.PUBLIC_APP_URL ||
+        'https://assuredrewards.in';
+    return String(base).replace(/\/$/, '');
+};
+
 /**
  * Generate a PDF with QR codes for an order
  * @param {Object} options
@@ -106,7 +115,8 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                 }
 
                 // Generate QR code as data URL
-                const qrDataUrl = await QRCode.toDataURL(qr.uniqueHash, {
+                const qrTarget = `${getQrBaseUrl()}/redeem/${qr.uniqueHash}`;
+                const qrDataUrl = await QRCode.toDataURL(qrTarget, {
                     width: qrSize,
                     margin: 1,
                     errorCorrectionLevel: 'M'

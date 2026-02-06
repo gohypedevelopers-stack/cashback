@@ -2,15 +2,62 @@ const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const razorpay = require('../config/razorpay');
 
-// --- Payout Methods (UPI) ---
+const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
+const isValidUpiId = (value) => /^[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}$/.test(value || '');
+const isValidAccountNumber = (value) => /^[0-9]{9,18}$/.test(value || '');
+const isValidIfsc = (value) => /^[A-Z]{4}0[A-Z0-9]{6}$/.test(value || '');
+
+const buildBankPayoutLabel = ({ bankName, accountHolderName, accountNumber, ifsc }) => {
+    const suffix = accountNumber.slice(-4);
+    const parts = [
+        normalizeText(bankName) || 'Bank',
+        normalizeText(accountHolderName) || 'Account',
+        `XXXX${suffix}`,
+        ifsc
+    ];
+    return parts.join(' | ');
+};
+
+// --- Payout Methods (UPI / BANK) ---
 
 exports.addPayoutMethod = async (req, res) => {
     try {
-        const { type, value } = req.body;
+        const { type, value, details, upiId, bank } = req.body;
         const userId = req.user.id; // User or Vendor (via User ID)
+        const normalizedType = String(type || '').trim().toLowerCase();
+        let payload;
 
-        if (type !== 'upi') {
-            return res.status(400).json({ message: 'Only UPI is supported currently' });
+        if (normalizedType === 'upi') {
+            const normalizedUpi = normalizeText(upiId || value || details?.upiId).toLowerCase();
+            if (!isValidUpiId(normalizedUpi)) {
+                return res.status(400).json({ message: 'Invalid UPI ID' });
+            }
+            payload = {
+                type: 'upi',
+                value: normalizedUpi,
+                details: { upiId: normalizedUpi }
+            };
+        } else if (normalizedType === 'bank') {
+            const bankInput = bank || details || {};
+            const accountNumber = normalizeText(bankInput.accountNumber);
+            const ifsc = normalizeText(bankInput.ifsc).toUpperCase();
+            const accountHolderName = normalizeText(bankInput.accountHolderName);
+            const bankName = normalizeText(bankInput.bankName);
+
+            if (!isValidAccountNumber(accountNumber)) {
+                return res.status(400).json({ message: 'Invalid bank account number' });
+            }
+            if (!isValidIfsc(ifsc)) {
+                return res.status(400).json({ message: 'Invalid IFSC code' });
+            }
+
+            payload = {
+                type: 'bank',
+                value: buildBankPayoutLabel({ bankName, accountHolderName, accountNumber, ifsc }),
+                details: { accountNumber, ifsc, accountHolderName, bankName }
+            };
+        } else {
+            return res.status(400).json({ message: 'Payout method type must be "upi" or "bank"' });
         }
 
         // Check if primary exists
@@ -21,8 +68,9 @@ exports.addPayoutMethod = async (req, res) => {
         const method = await prisma.payoutMethod.create({
             data: {
                 userId,
-                type,
-                value,
+                type: payload.type,
+                value: payload.value,
+                details: payload.details,
                 isPrimary: !existingPrimary // Auto-set primary if first one
             }
         });
@@ -75,10 +123,9 @@ exports.requestWithdrawal = async (req, res) => {
         const userId = req.user.id;
 
         // 1. Get Wallet
-        // Try finding wallet as Vendor first, then User (customer cashback)
-        let wallet = await prisma.wallet.findUnique({ where: { vendorId: undefined, userId } });
+        // Try user wallet first, then vendor wallet.
+        let wallet = await prisma.wallet.findUnique({ where: { userId } });
 
-        // If not found directly by userId (Customer), check if they are a Vendor
         if (!wallet) {
             const vendor = await prisma.vendor.findUnique({ where: { userId } });
             if (vendor) {
@@ -86,51 +133,110 @@ exports.requestWithdrawal = async (req, res) => {
             }
         }
 
-        if (!wallet) return res.status(404).json({ message: 'Wallet not found' });
+        if (!wallet) {
+            return res.status(404).json({ message: 'Wallet not found' });
+        }
 
         // 2. Validate Amount
-        if (parseFloat(amount) <= 0) return res.status(400).json({ message: 'Invalid amount' });
-        if (parseFloat(wallet.balance) < parseFloat(amount)) {
+        const numericAmount = Number(amount);
+        if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+            return res.status(400).json({ message: 'Invalid amount' });
+        }
+        if (parseFloat(wallet.balance) < numericAmount) {
             return res.status(400).json({ message: 'Insufficient balance' });
         }
 
-        // 3. Handle Payout Method (Method ID or Direct UPI)
+        // 3. Handle Payout Method (saved method OR direct UPI OR direct bank details)
         let methodId = null;
+        let methodObj = null;
         const { upiId } = req.body;
+        const bankInput = req.body.bank && typeof req.body.bank === 'object' ? req.body.bank : null;
 
-        if (upiId) {
-            // "Easy and Simple" flow: User types UPI ID directly.
-            // Check if exists or create new
-            let method = await prisma.payoutMethod.findFirst({
-                where: { userId, type: 'upi', value: upiId }
-            });
-
-            if (!method) {
-                // Auto-save for future? Or just one-time?
-                // Saving it makes sense for history.
-                method = await prisma.payoutMethod.create({
-                    data: {
-                        userId,
-                        type: 'upi',
-                        value: upiId,
-                        isPrimary: true // Make this primary as it's the latest
-                    }
-                });
-            }
-            methodId = method.id;
-        } else if (payoutMethodId) {
+        if (payoutMethodId) {
             // Traditional flow: Select saved method
             const method = await prisma.payoutMethod.findUnique({ where: { id: payoutMethodId } });
             if (!method || method.userId !== userId) {
                 return res.status(400).json({ message: 'Invalid payout method' });
             }
             methodId = method.id;
+            methodObj = method;
+        } else if (normalizeText(upiId)) {
+            const normalizedUpi = normalizeText(upiId).toLowerCase();
+            if (!isValidUpiId(normalizedUpi)) {
+                return res.status(400).json({ message: 'Invalid UPI ID' });
+            }
+
+            let method = await prisma.payoutMethod.findFirst({
+                where: { userId, type: 'upi', value: normalizedUpi }
+            });
+
+            if (!method) {
+                await prisma.payoutMethod.updateMany({
+                    where: { userId, isPrimary: true },
+                    data: { isPrimary: false }
+                });
+
+                method = await prisma.payoutMethod.create({
+                    data: {
+                        userId,
+                        type: 'upi',
+                        value: normalizedUpi,
+                        details: { upiId: normalizedUpi },
+                        isPrimary: true
+                    }
+                });
+            }
+
+            methodId = method.id;
+            methodObj = method;
+        } else if (bankInput) {
+            const accountNumber = normalizeText(bankInput.accountNumber);
+            const ifsc = normalizeText(bankInput.ifsc).toUpperCase();
+            const accountHolderName = normalizeText(bankInput.accountHolderName);
+            const bankName = normalizeText(bankInput.bankName);
+
+            if (!isValidAccountNumber(accountNumber)) {
+                return res.status(400).json({ message: 'Invalid bank account number' });
+            }
+            if (!isValidIfsc(ifsc)) {
+                return res.status(400).json({ message: 'Invalid IFSC code' });
+            }
+
+            const existingBankMethods = await prisma.payoutMethod.findMany({
+                where: { userId, type: 'bank' }
+            });
+
+            let method = existingBankMethods.find((item) => {
+                const details = item.details || {};
+                return details.accountNumber === accountNumber && String(details.ifsc || '').toUpperCase() === ifsc;
+            });
+
+            if (!method) {
+                await prisma.payoutMethod.updateMany({
+                    where: { userId, isPrimary: true },
+                    data: { isPrimary: false }
+                });
+
+                method = await prisma.payoutMethod.create({
+                    data: {
+                        userId,
+                        type: 'bank',
+                        value: buildBankPayoutLabel({ bankName, accountHolderName, accountNumber, ifsc }),
+                        details: { accountNumber, ifsc, accountHolderName, bankName },
+                        isPrimary: true
+                    }
+                });
+            }
+
+            methodId = method.id;
+            methodObj = method;
         } else {
-            return res.status(400).json({ message: 'Please provide upiId or payoutMethodId' });
+            return res.status(400).json({ message: 'Please provide upiId, bank details, or payoutMethodId' });
         }
 
-        // Fetch method details for description
-        const methodObj = await prisma.payoutMethod.findUnique({ where: { id: methodId } });
+        if (!methodObj) {
+            methodObj = await prisma.payoutMethod.findUnique({ where: { id: methodId } });
+        }
 
         // 4. Create Withdrawal Request Transactionally
         const withdrawal = await prisma.$transaction(async (tx) => {
@@ -140,7 +246,7 @@ exports.requestWithdrawal = async (req, res) => {
 
             await tx.wallet.update({
                 where: { id: wallet.id },
-                data: { balance: { decrement: parseFloat(amount) } }
+                data: { balance: { decrement: numericAmount } }
             });
 
             // Create Transaction Log
@@ -148,10 +254,12 @@ exports.requestWithdrawal = async (req, res) => {
                 data: {
                     walletId: wallet.id,
                     type: 'debit',
-                    amount: parseFloat(amount),
+                    amount: numericAmount,
                     category: 'withdrawal',
                     status: 'pending', // Pending Admin Approval
-                    description: `Withdrawal request to ${methodObj.value}`
+                    description: methodObj?.type === 'bank'
+                        ? `Withdrawal request to bank (${methodObj.value})`
+                        : `Withdrawal request to ${methodObj.value}`
                 }
             });
 
@@ -159,7 +267,7 @@ exports.requestWithdrawal = async (req, res) => {
             return await tx.withdrawal.create({
                 data: {
                     walletId: wallet.id,
-                    amount: parseFloat(amount),
+                    amount: numericAmount,
                     status: 'pending',
                     payoutMethodId: methodId
                 }

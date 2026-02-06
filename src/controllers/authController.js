@@ -2,7 +2,6 @@ const prisma = require('../config/prismaClient');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const { isSubscriptionActive } = require('../utils/subscriptionUtils');
 const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
 const { safeLogActivity } = require('../utils/activityLogger');
 
@@ -102,48 +101,17 @@ exports.login = async (req, res) => {
         if (user.role === 'vendor') {
             const vendor = await prisma.vendor.findUnique({
                 where: { userId: user.id },
-                include: {
-                    Brand: {
-                        include: { Subscription: true }
-                    }
-                }
+                include: { Brand: true }
             });
 
-            if (!vendor || !vendor.Brand || !vendor.Brand.Subscription) {
-                return res.status(403).json({ message: 'Vendor is not yet assigned a brand and subscription' });
-            }
-
-            let { Subscription } = vendor.Brand;
-            const now = new Date();
-            if (Subscription.endDate && new Date(Subscription.endDate) <= now && Subscription.status !== 'EXPIRED') {
-                Subscription = await prisma.subscription.update({
-                    where: { id: Subscription.id },
-                    data: { status: 'EXPIRED' }
-                });
-                await prisma.vendor.update({
-                    where: { id: vendor.id },
-                    data: { status: 'expired' }
-                });
-            }
-
-            const vendorStatus = String(vendor.status || '').toLowerCase();
-            if (vendorStatus !== 'active') {
-                return res.status(403).json({ message: `Vendor account is ${vendorStatus}. Please contact admin.` });
-            }
-
-            const brandStatus = String(vendor.Brand?.status || '').toLowerCase();
-            if (brandStatus && brandStatus !== 'active') {
-                return res.status(403).json({ message: `Brand status is ${brandStatus}. Please contact admin.` });
-            }
-
-            if (!isSubscriptionActive(Subscription)) {
-                return res.status(403).json({ message: 'Vendor subscription is not active' });
+            if (!vendor) {
+                return res.status(403).json({ message: 'Vendor profile not found' });
             }
 
             vendorDetails = {
                 vendorId: vendor.id,
                 brand: vendor.Brand,
-                subscription: Subscription
+                status: vendor.status
             };
 
             safeLogVendorActivity({

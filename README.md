@@ -18,6 +18,10 @@
 
 ## API Endpoints
 
+Detailed Postman testing guide:
+
+- `POSTMAN_API_TESTING.md`
+
 ### Auth
 - `POST /api/auth/register` - Register (admin/vendor/customer)
 - `POST /api/auth/login` - Login
