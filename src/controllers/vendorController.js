@@ -1028,7 +1028,7 @@ exports.updateCampaign = async (req, res) => {
 
 exports.addProduct = async (req, res) => {
     try {
-        const { brandId, name, sku, mrp, variant, description, category, imageUrl } = req.body;
+        const { brandId, name, sku, mrp, variant, description, category, packSize, warranty, imageUrl } = req.body;
 
         // Check ownership
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1047,6 +1047,8 @@ exports.addProduct = async (req, res) => {
                 variant,
                 description,
                 category,
+                packSize: typeof packSize === 'string' ? packSize.trim() || null : null,
+                warranty: typeof warranty === 'string' ? warranty.trim() || null : null,
                 imageUrl,
                 status: 'active'
             }
@@ -1144,11 +1146,34 @@ exports.getVendorProducts = async (req, res) => {
 
         const products = await prisma.product.findMany({
             where: { Brand: { vendorId: vendor.id } },
-            include: { Brand: { select: { name: true } } },
+            select: {
+                id: true,
+                brandId: true,
+                name: true,
+                sku: true,
+                mrp: true,
+                variant: true,
+                category: true,
+                description: true,
+                packSize: true,
+                warranty: true,
+                imageUrl: true,
+                bannerUrl: true,
+                status: true,
+                createdAt: true,
+                updatedAt: true,
+                Brand: { select: { name: true } }
+            },
             orderBy: { createdAt: 'desc' }
         });
 
-        res.json(products);
+        // Keep pricing consistently numeric for the frontend table.
+        res.json(
+            products.map((product) => ({
+                ...product,
+                mrp: product.mrp !== null && product.mrp !== undefined ? Number(product.mrp) : null
+            }))
+        );
     } catch (error) {
         res.status(500).json({ message: 'Error fetching products', error: error.message });
     }
@@ -1157,9 +1182,11 @@ exports.getVendorProducts = async (req, res) => {
 exports.updateProduct = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, sku, mrp, variant, description, category, imageUrl, status } = req.body;
+        const { name, sku, mrp, variant, description, category, packSize, warranty, imageUrl, status } = req.body;
         const hasSku = Object.prototype.hasOwnProperty.call(req.body || {}, 'sku');
         const hasMrp = Object.prototype.hasOwnProperty.call(req.body || {}, 'mrp');
+        const hasPackSize = Object.prototype.hasOwnProperty.call(req.body || {}, 'packSize');
+        const hasWarranty = Object.prototype.hasOwnProperty.call(req.body || {}, 'warranty');
 
         // Verify ownership
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1188,6 +1215,12 @@ exports.updateProduct = async (req, res) => {
                 const parsedMrp = Number(mrp);
                 data.mrp = Number.isFinite(parsedMrp) ? parsedMrp : null;
             }
+        }
+        if (hasPackSize) {
+            data.packSize = typeof packSize === 'string' ? packSize.trim() || null : null;
+        }
+        if (hasWarranty) {
+            data.warranty = typeof warranty === 'string' ? warranty.trim() || null : null;
         }
 
         const updated = await prisma.product.update({

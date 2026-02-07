@@ -1,6 +1,46 @@
 ﻿const prisma = require('../config/prismaClient');
 const bcrypt = require('bcryptjs');
 
+const toPositiveNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+};
+
+const formatCashbackValue = (value) => {
+    if (!Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? `${value}` : value.toFixed(2);
+};
+
+const getCampaignCashbackRange = (campaign, productId) => {
+    if (!campaign) return null;
+    const amounts = [];
+
+    const base = toPositiveNumber(campaign.cashbackAmount);
+    if (base) amounts.push(base);
+
+    const allocations = Array.isArray(campaign.allocations) ? campaign.allocations : [];
+    allocations.forEach((alloc) => {
+        if (productId && alloc?.productId && alloc.productId !== productId) return;
+        const amount = toPositiveNumber(alloc?.cashbackAmount);
+        if (amount) amounts.push(amount);
+    });
+
+    if (!amounts.length) return null;
+    const min = Math.min(...amounts);
+    const max = Math.max(...amounts);
+    return { min, max };
+};
+
+const getCampaignRewardLabel = (campaign, productId) => {
+    const range = getCampaignCashbackRange(campaign, productId);
+    if (!range) return 'Check App';
+    const minLabel = formatCashbackValue(range.min);
+    const maxLabel = formatCashbackValue(range.max);
+    if (!minLabel || !maxLabel) return 'Check App';
+    if (range.min === range.max) return `Up to INR ${maxLabel}`;
+    return `INR ${minLabel} - ${maxLabel}`;
+};
+
 exports.getDashboard = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -414,7 +454,7 @@ exports.getProductDetails = async (req, res) => {
 
         res.json({
             ...product,
-            reward: activeCampaign ? `Up to â‚¹${activeCampaign.cashbackAmount}` : 'Check App',
+            reward: getCampaignRewardLabel(activeCampaign, product.id),
             scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
         });
     } catch (error) {

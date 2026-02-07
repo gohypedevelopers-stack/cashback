@@ -1,6 +1,46 @@
 ﻿const prisma = require('../config/prismaClient');
 const { giftCardCategories, giftCards, storeTabs, storeCategories, vouchers, storeProducts } = require('../data/publicCatalog');
 
+const toPositiveNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+};
+
+const formatCashbackValue = (value) => {
+    if (!Number.isFinite(value)) return null;
+    return Number.isInteger(value) ? `${value}` : value.toFixed(2);
+};
+
+const getCampaignCashbackRange = (campaign, productId) => {
+    if (!campaign) return null;
+    const amounts = [];
+
+    const base = toPositiveNumber(campaign.cashbackAmount);
+    if (base) amounts.push(base);
+
+    const allocations = Array.isArray(campaign.allocations) ? campaign.allocations : [];
+    allocations.forEach((alloc) => {
+        if (productId && alloc?.productId && alloc.productId !== productId) return;
+        const amount = toPositiveNumber(alloc?.cashbackAmount);
+        if (amount) amounts.push(amount);
+    });
+
+    if (!amounts.length) return null;
+    const min = Math.min(...amounts);
+    const max = Math.max(...amounts);
+    return { min, max };
+};
+
+const getCampaignRewardLabel = (campaign, productId) => {
+    const range = getCampaignCashbackRange(campaign, productId);
+    if (!range) return 'Check App';
+    const minLabel = formatCashbackValue(range.min);
+    const maxLabel = formatCashbackValue(range.max);
+    if (!minLabel || !maxLabel) return 'Check App';
+    if (range.min === range.max) return `Up to INR ${maxLabel}`;
+    return `INR ${minLabel} - ${maxLabel}`;
+};
+
 // --- Home Data (Universal) ---
 exports.getHomeData = async (req, res) => {
     try {
@@ -121,6 +161,7 @@ exports.getBrandDetails = async (req, res) => {
                     productId: true,
                     title: true,
                     cashbackAmount: true,
+                    allocations: true,
                     endDate: true
                 }
             })
@@ -137,8 +178,7 @@ exports.getBrandDetails = async (req, res) => {
             }
         });
 
-        const mapReward = (campaign) =>
-            campaign?.cashbackAmount ? `Up to INR ${campaign.cashbackAmount}` : 'Check App';
+        const mapReward = (campaign, productId) => getCampaignRewardLabel(campaign, productId);
 
         const mapScheme = (campaign) => campaign?.title || 'Standard Offer';
 
@@ -161,7 +201,7 @@ exports.getBrandDetails = async (req, res) => {
                     mrp: p.mrp ? Number(p.mrp) : null,
                     variant: p.variant,
                     image: p.imageUrl,
-                    reward: mapReward(linkedCampaign),
+                    reward: mapReward(linkedCampaign, p.id),
                     scheme: mapScheme(linkedCampaign),
                     campaignId: linkedCampaign?.id || null,
                     campaignEndDate: linkedCampaign?.endDate || null,
@@ -203,7 +243,7 @@ exports.getProductDetails = async (req, res) => {
         res.json({
             ...product,
             mrp: product.mrp ? Number(product.mrp) : null,
-            reward: activeCampaign ? `Up to INR ${activeCampaign.cashbackAmount}` : 'Check App',
+            reward: getCampaignRewardLabel(activeCampaign, product.id),
             scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
         });
     } catch (error) {
