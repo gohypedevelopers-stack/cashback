@@ -1158,6 +1158,8 @@ exports.updateProduct = async (req, res) => {
     try {
         const { id } = req.params;
         const { name, sku, mrp, variant, description, category, imageUrl, status } = req.body;
+        const hasSku = Object.prototype.hasOwnProperty.call(req.body || {}, 'sku');
+        const hasMrp = Object.prototype.hasOwnProperty.call(req.body || {}, 'mrp');
 
         // Verify ownership
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1167,18 +1169,30 @@ exports.updateProduct = async (req, res) => {
 
         if (!product) return res.status(404).json({ message: 'Product not found or unauthorized' });
 
+        const data = {
+            name,
+            variant,
+            description,
+            category,
+            imageUrl,
+            status
+        };
+
+        if (hasSku) {
+            data.sku = typeof sku === 'string' ? sku.trim() || null : null;
+        }
+        if (hasMrp) {
+            if (mrp === undefined || mrp === null || mrp === '') {
+                data.mrp = null;
+            } else {
+                const parsedMrp = Number(mrp);
+                data.mrp = Number.isFinite(parsedMrp) ? parsedMrp : null;
+            }
+        }
+
         const updated = await prisma.product.update({
             where: { id },
-            data: {
-                name,
-                sku: sku || null,
-                mrp: mrp === undefined || mrp === null || mrp === '' ? null : mrp,
-                variant,
-                description,
-                category,
-                imageUrl,
-                status
-            }
+            data
         });
 
         safeLogVendorActivity({
