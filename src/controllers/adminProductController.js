@@ -4,7 +4,7 @@ const prisma = require('../config/prismaClient');
 
 exports.createProduct = async (req, res) => {
     try {
-        const { brandId, name, variant, category, description, packSize, warranty, imageUrl, bannerUrl } = req.body;
+        const { brandId, name, sku, mrp, variant, category, description, packSize, warranty, imageUrl, bannerUrl } = req.body;
 
         // Check if brand exists
         const brand = await prisma.brand.findUnique({ where: { id: brandId } });
@@ -16,6 +16,8 @@ exports.createProduct = async (req, res) => {
             data: {
                 brandId,
                 name,
+                sku: sku || null,
+                mrp: mrp === undefined || mrp === null || mrp === '' ? null : mrp,
                 variant,
                 category,
                 description,
@@ -87,7 +89,13 @@ exports.getProduct = async (req, res) => {
 exports.updateProduct = async (req, res) => {
     try {
         const { id } = req.params;
-        const data = req.body;
+        const data = { ...req.body };
+        if (Object.prototype.hasOwnProperty.call(data, 'sku')) {
+            data.sku = data.sku || null;
+        }
+        if (Object.prototype.hasOwnProperty.call(data, 'mrp')) {
+            data.mrp = data.mrp === '' || data.mrp === undefined ? null : data.mrp;
+        }
 
         const product = await prisma.product.update({
             where: { id },

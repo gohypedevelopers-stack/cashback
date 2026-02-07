@@ -73,6 +73,8 @@ model Product {
   id          String     @id @default(uuid())
   brandId     String
   name        String
+  sku         String?
+  mrp         Decimal?   @db.Decimal(10, 2)
   variant     String?
   category    String?
   description String?

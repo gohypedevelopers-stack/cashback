@@ -596,24 +596,14 @@ exports.getVendorBrand = async (req, res) => {
     try {
         const vendor = await prisma.vendor.findUnique({
             where: { userId: req.user.id },
-            include: {
-                Brand: {
-                    include: {
-                        Subscription: true
-                    }
-                }
-            }
+            include: { Brand: true }
         });
 
         if (!vendor || !vendor.Brand) {
             return res.status(404).json({ message: 'Brand not found for this vendor' });
         }
 
-        const brand = vendor.Brand;
-        res.json({
-            ...brand,
-            subscription: brand.Subscription || null
-        });
+        res.json(vendor.Brand);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brand', error: error.message });
     }
@@ -623,13 +613,12 @@ exports.getVendorBrands = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const brand = await prisma.brand.findUnique({
-            where: { vendorId: vendor.id },
-            include: { Subscription: true }
+            where: { vendorId: vendor.id }
         });
         if (!brand) {
             return res.json([]);
         }
-        res.json([{ ...brand, subscription: brand.Subscription || null }]);
+        res.json([brand]);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brands', error: error.message });
     }
@@ -637,9 +626,54 @@ exports.getVendorBrands = async (req, res) => {
 
 // Upsert Vendor Brand (Create or Update)
 exports.upsertVendorBrand = async (req, res) => {
-    res.status(403).json({
-        message: 'Brand setup and modifications are performed through the admin dashboard only'
-    });
+    try {
+        const { name, website, logoUrl, qrPricePerUnit } = req.body || {};
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+
+        const existingBrand = await prisma.brand.findUnique({
+            where: { vendorId: vendor.id }
+        });
+
+        const payload = {
+            name: typeof name === 'string' && name.trim() ? name.trim() : existingBrand?.name || vendor.businessName || 'My Brand',
+            website: typeof website === 'string' && website.trim() ? website.trim() : null,
+            logoUrl: typeof logoUrl === 'string' && logoUrl.trim() ? logoUrl.trim() : null,
+            status: 'active'
+        };
+
+        if (qrPricePerUnit !== undefined && qrPricePerUnit !== null && qrPricePerUnit !== '') {
+            payload.qrPricePerUnit = qrPricePerUnit;
+        }
+
+        const brand = existingBrand
+            ? await prisma.brand.update({
+                where: { id: existingBrand.id },
+                data: payload
+            })
+            : await prisma.brand.create({
+                data: {
+                    ...payload,
+                    vendorId: vendor.id
+                }
+            });
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: existingBrand ? 'brand_update' : 'brand_create',
+            entityType: 'brand',
+            entityId: brand.id,
+            metadata: {
+                name: brand.name,
+                website: brand.website,
+                logoUrl: brand.logoUrl
+            },
+            req
+        });
+
+        res.json({ message: existingBrand ? 'Brand updated successfully.' : 'Brand created successfully.', brand });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to upsert brand', error: error.message });
+    }
 };
 
 exports.updateVendorProfile = async (req, res) => {
@@ -823,38 +857,20 @@ exports.requestBrand = async (req, res) => {
                 website,
                 logoUrl,
                 vendorId: vendor.id,
-                status: 'pending' // Default to pending for admin approval
+                status: 'active'
             }
         });
 
         // Log activity
         safeLogVendorActivity({
             vendorId: vendor.id,
-            action: 'brand_creation_request',
+            action: 'brand_create',
             entityType: 'brand',
             entityId: brand.id,
             metadata: { name, website },
             req
         });
-
-        // Notify Admins
-        const admins = await prisma.user.findMany({
-            where: { role: 'admin' },
-            select: { id: true }
-        });
-
-        if (admins.length) {
-            const notifications = admins.map(admin => ({
-                userId: admin.id,
-                title: 'New Brand Registration',
-                message: `Vendor ${vendor.businessName} has registered a new brand: ${name}`,
-                type: 'brand_registration',
-                metadata: { brandId: brand.id, vendorId: vendor.id }
-            }));
-            await prisma.notification.createMany({ data: notifications });
-        }
-
-        res.status(201).json({ message: 'Brand registered successfully! Waiting for approval.', brand });
+        res.status(201).json({ message: 'Brand created successfully.', brand });
 
     } catch (error) {
         console.error('Request Brand Error:', error);
@@ -1012,7 +1028,7 @@ exports.updateCampaign = async (req, res) => {
 
 exports.addProduct = async (req, res) => {
     try {
-        const { brandId, name, variant, description, category, imageUrl } = req.body;
+        const { brandId, name, sku, mrp, variant, description, category, imageUrl } = req.body;
 
         // Check ownership
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1026,6 +1042,8 @@ exports.addProduct = async (req, res) => {
             data: {
                 brandId,
                 name,
+                sku: sku || null,
+                mrp: mrp === undefined || mrp === null || mrp === '' ? null : mrp,
                 variant,
                 description,
                 category,
@@ -1074,6 +1092,11 @@ exports.importProducts = async (req, res) => {
                 return {
                     brandId,
                     name: item.name?.trim(),
+                    sku: item.sku?.trim() || null,
+                    mrp:
+                        item.mrp === undefined || item.mrp === null || item.mrp === ''
+                            ? null
+                            : item.mrp,
                     variant: item.variant?.trim() || null,
                     category: item.category?.trim() || null,
                     description: item.description?.trim() || null,
@@ -1134,7 +1157,7 @@ exports.getVendorProducts = async (req, res) => {
 exports.updateProduct = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, variant, description, category, imageUrl, status } = req.body;
+        const { name, sku, mrp, variant, description, category, imageUrl, status } = req.body;
 
         // Verify ownership
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1148,6 +1171,8 @@ exports.updateProduct = async (req, res) => {
             where: { id },
             data: {
                 name,
+                sku: sku || null,
+                mrp: mrp === undefined || mrp === null || mrp === '' ? null : mrp,
                 variant,
                 description,
                 category,

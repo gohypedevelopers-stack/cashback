@@ -68,32 +68,6 @@ exports.getCatalog = async (req, res) => {
     }
 };
 
-exports.getProductDetails = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const product = await prisma.product.findUnique({
-            where: { id },
-            include: { Brand: true }
-        });
-
-        if (!product) return res.status(404).json({ message: 'Product not found' });
-
-        // Find associated active campaign reward
-        const activeCampaign = await prisma.campaign.findFirst({
-            where: { brandId: product.brandId, status: 'active' },
-            orderBy: { cashbackAmount: 'desc' }
-        });
-
-        res.json({
-            ...product,
-            reward: activeCampaign ? `Up to â‚¹${activeCampaign.cashbackAmount}` : 'Check App',
-            scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching product', error: error.message });
-    }
-};
-
 exports.getCategories = async (req, res) => {
     try {
         // Group by category to return unique list
@@ -111,17 +85,7 @@ exports.getCategories = async (req, res) => {
 exports.getActiveBrands = async (req, res) => {
     try {
         const brands = await prisma.brand.findMany({
-            where: {
-                status: 'active',
-                Subscription: {
-                    is: {
-                        status: 'ACTIVE',
-                        endDate: {
-                            gt: new Date()
-                        }
-                    }
-                }
-            },
+            where: { status: 'active' },
             select: { id: true, name: true, logoUrl: true, website: true }
         });
         res.json(brands);
@@ -133,43 +97,117 @@ exports.getActiveBrands = async (req, res) => {
 exports.getBrandDetails = async (req, res) => {
     try {
         const { id } = req.params;
-        const brand = await prisma.brand.findUnique({
-            where: { id },
-            include: {
-                Products: {
-                    where: { status: 'active' }
-                },
-                Vendor: {
-                    include: { User: { select: { email: true } } }
+        const [brand, activeCampaigns] = await Promise.all([
+            prisma.brand.findUnique({
+                where: { id },
+                include: {
+                    Products: {
+                        where: { status: 'active' }
+                    },
+                    Vendor: {
+                        include: { User: { select: { email: true } } }
+                    }
                 }
+            }),
+            prisma.campaign.findMany({
+                where: {
+                    brandId: id,
+                    status: 'active',
+                    endDate: { gt: new Date() }
+                },
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    id: true,
+                    productId: true,
+                    title: true,
+                    cashbackAmount: true,
+                    endDate: true
+                }
+            })
+        ]);
+
+        if (!brand) return res.status(404).json({ message: 'Brand not found' });
+
+        const productCampaignMap = new Map();
+        let fallbackCampaign = null;
+        activeCampaigns.forEach((campaign) => {
+            if (!fallbackCampaign) fallbackCampaign = campaign;
+            if (campaign.productId && !productCampaignMap.has(campaign.productId)) {
+                productCampaignMap.set(campaign.productId, campaign);
             }
         });
 
-        if (!brand) return res.status(404).json({ message: 'Brand not found' });
+        const mapReward = (campaign) =>
+            campaign?.cashbackAmount ? `Up to INR ${campaign.cashbackAmount}` : 'Check App';
+
+        const mapScheme = (campaign) => campaign?.title || 'Standard Offer';
 
         // Shape data for frontend
         const brandData = {
             id: brand.id,
             name: brand.name,
             logo: brand.logoUrl,
-            banner: brand.logoUrl, // Fallback as we don't have banner in schema
+            banner: brand.logoUrl,
             website: brand.website,
-            email: brand.Vendor?.User?.email || "contact@brand.com",
-            about: "Trusted Brand Partner of GoHype.", // Default
-            tags: ["Verified", "Premium"], // Default
-            products: brand.Products.map(p => ({
-                id: p.id,
-                name: p.name,
-                variant: p.variant,
-                image: p.imageUrl,
-                reward: "Check App", // Could fetch campaign if needed
-                category: p.category
-            }))
+            email: brand.Vendor?.User?.email || 'contact@brand.com',
+            about: 'Trusted Brand Partner of GoHype.',
+            tags: ['Verified', 'Premium'],
+            products: brand.Products.map((p) => {
+                const linkedCampaign = productCampaignMap.get(p.id) || fallbackCampaign;
+                return {
+                    id: p.id,
+                    name: p.name,
+                    sku: p.sku,
+                    mrp: p.mrp ? Number(p.mrp) : null,
+                    variant: p.variant,
+                    image: p.imageUrl,
+                    reward: mapReward(linkedCampaign),
+                    scheme: mapScheme(linkedCampaign),
+                    campaignId: linkedCampaign?.id || null,
+                    campaignEndDate: linkedCampaign?.endDate || null,
+                    category: p.category
+                };
+            })
         };
 
         res.json(brandData);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brand details', error: error.message });
+    }
+};
+
+exports.getProductDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { Brand: true }
+        });
+
+        if (!product) return res.status(404).json({ message: 'Product not found' });
+
+        // Prefer product-specific running campaign, fallback to brand-level running campaign
+        const activeCampaign = await prisma.campaign.findFirst({
+            where: {
+                brandId: product.brandId,
+                status: 'active',
+                endDate: { gt: new Date() },
+                OR: [
+                    { productId: product.id },
+                    { productId: null }
+                ]
+            },
+            orderBy: { cashbackAmount: 'desc' }
+        });
+
+        res.json({
+            ...product,
+            mrp: product.mrp ? Number(product.mrp) : null,
+            reward: activeCampaign ? `Up to INR ${activeCampaign.cashbackAmount}` : 'Check App',
+            scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching product', error: error.message });
     }
 };
 

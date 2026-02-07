@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
-const { requireActiveSubscription } = require('../middleware/subscriptionMiddleware');
 const {
     getWalletBalance,
     rechargeWallet,
@@ -44,11 +43,10 @@ const {
 
 router.use(protect);
 router.use(authorize('vendor'));
-// router.use(requireActiveSubscription); // REMOVED GLOBAL APPLY
 
 // --- OPEN ROUTES (Onboarding & Account Management) ---
 
-// Wallet (Viewing & Recharging allowed without active subscription)
+// Wallet
 router.get('/wallet', getWalletBalance);
 router.post('/wallet/recharge', rechargeWallet);
 
@@ -60,7 +58,7 @@ router.post('/credentials/request', requestCredentialUpdate);
 // Brand Management (Creation & Viewing allowed)
 router.get('/brands', getVendorBrands);
 router.get('/brand', getVendorBrand);
-router.post('/brand', upsertVendorBrand); // Admin only internally
+router.post('/brand', upsertVendorBrand);
 router.post('/brands', requestBrand); // <--- CRITICAL: Must be open
 router.put('/brands/:id', updateBrand);
 router.delete('/brands/:id', deleteBrand);
@@ -74,9 +72,8 @@ router.get('/support', getVendorSupportTickets);
 router.post('/support', createVendorSupportTicket);
 router.get('/brand-inquiries', getVendorBrandInquiries);
 
-// --- RESTRICTED ROUTES (Requires Active Subscription) ---
+// --- VENDOR ROUTES (No Subscription Gating) ---
 const restrictedRouter = express.Router();
-restrictedRouter.use(requireActiveSubscription);
 
 // QR Codes
 restrictedRouter.post('/qrs/order', orderQRs);
