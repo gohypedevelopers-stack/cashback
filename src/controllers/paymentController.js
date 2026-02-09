@@ -1,6 +1,7 @@
 const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const razorpay = require('../config/razorpay');
+const { safeLogActivity } = require('../utils/activityLogger');
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const isValidUpiId = (value) => /^[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}$/.test(value || '');
@@ -272,6 +273,22 @@ exports.requestWithdrawal = async (req, res) => {
                     payoutMethodId: methodId
                 }
             });
+        });
+
+        console.log('[PAYOUT] initiated', {
+            userId,
+            amount: numericAmount,
+            payoutMethodId: methodId,
+            withdrawalId: withdrawal.id
+        });
+        safeLogActivity({
+            actorUserId: userId,
+            actorRole: req.user?.role,
+            action: 'payout_initiated',
+            entityType: 'withdrawal',
+            entityId: withdrawal.id,
+            metadata: { amount: numericAmount, payoutMethodId: methodId },
+            req
         });
 
         res.status(201).json({ message: 'Withdrawal requested successfully', withdrawal });

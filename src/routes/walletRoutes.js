@@ -5,10 +5,16 @@ const payoutController = require('../controllers/payoutController');
 const { protect } = require('../middleware/authMiddleware');
 
 // Wallet routes
+router.get('/', protect, walletController.getWalletSummary);
+router.get('/overview', protect, walletController.getWalletOverview);
+router.get('/transactions', protect, walletController.getTransactionHistory);
+router.post('/redeem', protect, walletController.requestPayout);
+router.get('/payout/:id', protect, walletController.getPayoutStatus);
+
+// Legacy paths (kept for backward compatibility)
 router.get('/wallet/overview', protect, walletController.getWalletOverview);
 router.get('/wallet/transactions', protect, walletController.getTransactionHistory);
 router.post('/wallet/redeem', protect, walletController.requestPayout);
-router.get('/payout/:id', protect, walletController.getPayoutStatus);
 
 // UPI Management routes
 router.get('/payout-methods', protect, walletController.getPayoutMethods);

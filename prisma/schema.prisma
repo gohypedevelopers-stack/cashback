@@ -24,6 +24,7 @@ model User {
   username             String?         @unique
   ActivityLog          ActivityLog[]
   CredentialRequests   CredentialRequest[]
+  Claims               Claim[]
   Notifications        Notification[]
   PayoutMethods        PayoutMethod[]
   SupportTickets       SupportTicket[]
@@ -129,6 +130,20 @@ model QRCode {
 
   @@index([campaignId, status])
   @@index([vendorId, status])
+}
+
+model Claim {
+  id              String   @id @default(uuid())
+  token           String   @unique
+  amount          Decimal  @db.Decimal(12, 2)
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+  claimedAt       DateTime?
+  claimedByUserId String?
+  ClaimedByUser   User?    @relation(fields: [claimedByUserId], references: [id])
+
+  @@index([expiresAt])
+  @@index([claimedByUserId, claimedAt])
 }
 
 model QROrder {

@@ -1,5 +1,56 @@
 const prisma = require('../config/prismaClient');
 
+// GET /api/wallet - Wallet summary for claim flow
+exports.getWalletSummary = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        let wallet = await prisma.wallet.findUnique({
+            where: { userId },
+            include: {
+                Transactions: {
+                    orderBy: { createdAt: 'desc' },
+                    take: 10
+                }
+            }
+        });
+
+        if (!wallet) {
+            wallet = await prisma.wallet.create({
+                data: { userId, balance: 0.00, currency: 'INR' },
+                include: { Transactions: true }
+            });
+        }
+
+        const recentTransactions = wallet.Transactions.map((tx) => ({
+            id: tx.id,
+            type: tx.type,
+            amount: parseFloat(tx.amount),
+            category: tx.category,
+            status: tx.status,
+            description: tx.description,
+            referenceId: tx.referenceId,
+            createdAt: tx.createdAt
+        }));
+
+        res.json({
+            success: true,
+            wallet: {
+                balance: parseFloat(wallet.balance),
+                currency: wallet.currency
+            },
+            recentTransactions
+        });
+    } catch (error) {
+        console.error('Get wallet summary error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch wallet summary',
+            error: error.message
+        });
+    }
+};
+
 // Get Wallet Overview (Screen 8)
 exports.getWalletOverview = async (req, res) => {
     try {
@@ -231,6 +282,13 @@ exports.requestPayout = async (req, res) => {
                 payoutMethod: result.PayoutMethod.value,
                 createdAt: result.createdAt
             }
+        });
+
+        console.log('[PAYOUT] initiated (wallet)', {
+            userId,
+            amount: parseFloat(amount),
+            payoutMethodId,
+            withdrawalId: result.id
         });
 
     } catch (error) {

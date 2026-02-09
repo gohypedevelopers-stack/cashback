@@ -12,6 +12,7 @@ const userRoutes = require('./routes/userRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const walletRoutes = require('./routes/walletRoutes');
+const claimRoutes = require('./routes/claimRoutes');
 const path = require('path');
 
 const app = express();
@@ -36,6 +37,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/upload', uploadRoutes); // New Route
 app.use('/api/wallet', walletRoutes); // Wallet & Payout Routes
+app.use('/api/claim', claimRoutes); // Claim QR routes
 
 app.get('/', (req, res) => {
     res.send('Coupon Cashback API is running...');
