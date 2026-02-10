@@ -462,3 +462,39 @@ exports.getProductDetails = async (req, res) => {
     }
 };
 
+exports.getHomeStats = async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            include: { Wallet: true }
+        });
+
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const [productsOwned, productsReported, totalEarnedResult] = await Promise.all([
+            prisma.qRCode.count({
+                where: { redeemedByUserId: userId, status: 'redeemed' }
+            }),
+            prisma.supportTicket.count({
+                where: { userId }
+            }),
+            user.Wallet ? prisma.transaction.aggregate({
+                where: {
+                    walletId: user.Wallet.id,
+                    type: 'credit'
+                },
+                _sum: { amount: true }
+            }) : Promise.resolve({ _sum: { amount: 0 } })
+        ]);
+
+        res.json({
+            productsOwned,
+            productsReported,
+            totalEarned: totalEarnedResult._sum.amount || 0
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching home stats', error: error.message });
+    }
+};

@@ -4,7 +4,7 @@ const {
     getDashboard, getRedemptionHistory, getTransactionHistory, updateUserProfile,
     getAvailableOffers, createSupportTicket, getSupportTickets,
     getNotifications, markNotificationRead,
-    uploadAvatar, changePassword, deleteAccount
+    uploadAvatar, changePassword, deleteAccount, getHomeStats
 } = require('../controllers/userController');
 const {
     requestWithdrawal,
@@ -15,6 +15,7 @@ const { protect } = require('../middleware/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 
 router.get('/dashboard', protect, getDashboard);
+router.get('/home-stats', protect, getHomeStats);
 router.post('/scan-qr/:hash', protect, scanAndRedeem);
 
 // Wallet & Payouts
