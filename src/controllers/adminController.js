@@ -820,11 +820,14 @@ exports.verifyVendor = async (req, res) => {
             return res.status(400).json({ message: 'Invalid vendor status' });
         }
 
+        const shouldStoreReason = ['rejected', 'paused'].includes(normalizedStatus);
+        const reasonValue = shouldStoreReason ? (reason || null) : null;
+
         const vendor = await prisma.vendor.update({
             where: { id },
             data: {
                 status: normalizedStatus,
-                rejectionReason: normalizedStatus === 'rejected' ? reason : null
+                rejectionReason: reasonValue
             }
         });
 
@@ -844,6 +847,22 @@ exports.verifyVendor = async (req, res) => {
             },
             req
         });
+
+        if (normalizedStatus === 'paused' && reason) {
+            safeLogActivity({
+                actorUserId: req.user?.id,
+                actorRole: req.user?.role,
+                vendorId: vendor.id,
+                brandId: brand?.id,
+                action: 'vendor_flagged',
+                entityType: 'vendor',
+                entityId: vendor.id,
+                metadata: {
+                    reason
+                },
+                req
+            });
+        }
         res.json({ message: `Vendor ${normalizedStatus}`, vendor });
     } catch (error) {
         res.status(500).json({ message: 'Verification failed', error: error.message });
@@ -1110,6 +1129,9 @@ exports.getSystemStats = async (req, res) => {
             return acc;
         }, {});
 
+        const totalCredit = Number(creditSum._sum.amount || 0);
+        const totalDebit = Number(debitSum._sum.amount || 0);
+
         res.json({
             users: userCount,
             vendors: vendorCount,
@@ -1120,8 +1142,9 @@ exports.getSystemStats = async (req, res) => {
             totalQrs,
             redeemedQrs,
             totalWalletBalance: walletBalance._sum.balance || 0,
-            totalCredit: creditSum._sum.amount || 0,
-            totalDebit: debitSum._sum.amount || 0,
+            totalCredit,
+            totalDebit,
+            platformRevenue: totalCredit - totalDebit,
             userStatusCounts,
             vendorStatusCounts,
             pendingWithdrawals: pendingWithdrawalsCount || 0,
@@ -1129,6 +1152,98 @@ exports.getSystemStats = async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching stats', error: error.message });
+    }
+};
+
+// --- Finance & Revenue ---
+
+exports.getFinanceSummary = async (req, res) => {
+    try {
+        const [
+            rechargeAgg,
+            ordersAgg,
+            pendingWithdrawalAgg,
+            processedWithdrawalAgg,
+            rejectedWithdrawalAgg,
+            walletFloatAgg,
+            settlementTransactions
+        ] = await Promise.all([
+            prisma.transaction.aggregate({
+                where: { category: 'recharge', status: 'success' },
+                _sum: { amount: true },
+                _count: { _all: true }
+            }),
+            prisma.qROrder.aggregate({
+                _sum: { totalAmount: true },
+                _count: { _all: true }
+            }),
+            prisma.withdrawal.aggregate({
+                where: { status: 'pending' },
+                _sum: { amount: true },
+                _count: { _all: true }
+            }),
+            prisma.withdrawal.aggregate({
+                where: { status: 'processed' },
+                _sum: { amount: true },
+                _count: { _all: true }
+            }),
+            prisma.withdrawal.aggregate({
+                where: { status: 'rejected' },
+                _sum: { amount: true },
+                _count: { _all: true }
+            }),
+            prisma.wallet.aggregate({
+                _sum: { balance: true }
+            }),
+            prisma.transaction.findMany({
+                where: {
+                    category: {
+                        in: ['cashback_payout', 'withdrawal', 'campaign_payment', 'qr_purchase']
+                    }
+                },
+                include: {
+                    Wallet: {
+                        include: {
+                            Vendor: { include: { User: { select: { name: true, email: true } } } },
+                            User: { select: { name: true, email: true } }
+                        }
+                    }
+                },
+                orderBy: { createdAt: 'desc' },
+                take: 20
+            })
+        ]);
+
+        const vendorRecharges = Number(rechargeAgg._sum.amount || 0);
+        const techFeeEarnings = Number(ordersAgg._sum.totalAmount || 0);
+        const payoutLiabilities = Number(pendingWithdrawalAgg._sum.amount || 0);
+        const platformRevenue = techFeeEarnings;
+
+        res.json({
+            vendorRecharges,
+            vendorRechargeCount: rechargeAgg._count._all || 0,
+            techFeeEarnings,
+            payoutLiabilities,
+            platformRevenue,
+            walletFloat: walletFloatAgg._sum.balance || 0,
+            withdrawals: {
+                pending: {
+                    count: pendingWithdrawalAgg._count._all || 0,
+                    amount: payoutLiabilities
+                },
+                processed: {
+                    count: processedWithdrawalAgg._count._all || 0,
+                    amount: Number(processedWithdrawalAgg._sum.amount || 0)
+                },
+                rejected: {
+                    count: rejectedWithdrawalAgg._count._all || 0,
+                    amount: Number(rejectedWithdrawalAgg._sum.amount || 0)
+                }
+            },
+            settlements: settlementTransactions || []
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching finance summary', error: error.message });
     }
 };
 
@@ -1143,7 +1258,21 @@ exports.getAllUsers = async (req, res) => {
         const [users, total] = await Promise.all([
             prisma.user.findMany({
                 where: { role: 'customer' },
-                select: { id: true, name: true, email: true, phoneNumber: true, status: true, createdAt: true },
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    phoneNumber: true,
+                    status: true,
+                    createdAt: true,
+                    Wallet: {
+                        select: {
+                            id: true,
+                            balance: true,
+                            currency: true
+                        }
+                    }
+                },
                 skip,
                 take: limit,
                 orderBy: { createdAt: 'desc' }
@@ -1198,7 +1327,7 @@ exports.updateUserStatus = async (req, res) => {
 exports.getAllTransactions = async (req, res) => {
     try {
         const { page, limit, skip } = parsePagination(req, { defaultLimit: 50, maxLimit: 200 });
-        const { vendorId, brandId, walletId, type, category, status, from, to } = req.query;
+        const { vendorId, brandId, walletId, userId, type, category, status, from, to } = req.query;
         const where = {};
 
         if (walletId) {
@@ -1239,8 +1368,15 @@ exports.getAllTransactions = async (req, res) => {
             });
         }
 
-        if (resolvedVendorId) {
-            where.Wallet = { vendorId: resolvedVendorId };
+        let walletFilter = null;
+        if (userId) {
+            walletFilter = { userId };
+        } else if (resolvedVendorId) {
+            walletFilter = { vendorId: resolvedVendorId };
+        }
+
+        if (walletFilter) {
+            where.Wallet = walletFilter;
         }
 
         const [transactions, total] = await Promise.all([
@@ -2303,7 +2439,7 @@ exports.getCampaignAnalytics = async (req, res) => {
 
         if (!campaign) return res.status(404).json({ message: 'Campaign not found' });
 
-        const [totalQrs, redeemedQrs, statusGroups, orders, uniqueRedeemers, recentQrs, recentRedemptions] =
+        const [totalQrs, redeemedQrs, statusGroups, orders, redeemerGroups, recentQrs, recentRedemptions] =
             await Promise.all([
                 prisma.qRCode.count({ where: { campaignId: id } }),
                 prisma.qRCode.count({ where: { campaignId: id, status: 'redeemed' } }),
@@ -2347,6 +2483,20 @@ exports.getCampaignAnalytics = async (req, res) => {
         const orderedQuantity = orders.reduce((sum, order) => sum + order.quantity, 0);
         const walletDeductionPerQr = orderedQuantity ? walletDeductionTotal / orderedQuantity : 0;
 
+        const budgetTotal = campaign.totalBudget ? Number(campaign.totalBudget) : null;
+        const budgetUsed = walletDeductionTotal;
+        const budgetRemaining = budgetTotal !== null ? budgetTotal - budgetUsed : null;
+        const budgetUsagePercent =
+            budgetTotal !== null && budgetTotal > 0
+                ? Number(((budgetUsed / budgetTotal) * 100).toFixed(2))
+                : null;
+
+        const topRedeemers = Array.isArray(redeemerGroups)
+            ? [...redeemerGroups]
+                .sort((a, b) => b._count._all - a._count._all)
+                .slice(0, 5)
+            : [];
+
         const now = new Date();
         const startDate = campaign.startDate ? new Date(campaign.startDate) : null;
         const endDate = campaign.endDate ? new Date(campaign.endDate) : null;
@@ -2362,13 +2512,20 @@ exports.getCampaignAnalytics = async (req, res) => {
                 redeemedQrs,
                 failedQrs: (statusCounts.expired || 0) + (statusCounts.blocked || 0),
                 redemptionRate: totalQrs ? Number((redeemedQrs / totalQrs) * 100).toFixed(2) : '0.00',
-                uniqueRedeemers: uniqueRedeemers.length,
+                uniqueRedeemers: redeemerGroups.length,
                 orders: orders.length,
                 orderedQuantity,
                 walletDeductionTotal,
                 walletDeductionPerQr
             },
             statusCounts,
+            budget: {
+                total: budgetTotal,
+                used: budgetUsed,
+                remaining: budgetRemaining,
+                usagePercent: budgetUsagePercent
+            },
+            topRedeemers,
             validity: {
                 startDate,
                 endDate,
@@ -2387,6 +2544,13 @@ exports.getCampaignAnalytics = async (req, res) => {
 
 exports.getSystemSettings = async (req, res) => {
     try {
+        const defaultMetadata = {
+            waitlistEnabled: false,
+            fraudThresholds: {
+                maxRedemptionsPerUser: 5,
+                maxRedeemerSharePercent: 40
+            }
+        };
         let settings = await prisma.systemSettings.findUnique({
             where: { id: 'default' }
         });
@@ -2394,11 +2558,21 @@ exports.getSystemSettings = async (req, res) => {
         // Create default settings if not exists
         if (!settings) {
             settings = await prisma.systemSettings.create({
-                data: { id: 'default' }
+                data: { id: 'default', metadata: defaultMetadata }
             });
         }
 
-        res.json(settings);
+        const normalizedMetadata =
+            settings?.metadata && typeof settings.metadata === 'object'
+                ? { ...defaultMetadata, ...settings.metadata }
+                : defaultMetadata;
+
+        res.json({
+            ...settings,
+            metadata: normalizedMetadata,
+            waitlistEnabled: normalizedMetadata.waitlistEnabled,
+            fraudThresholds: normalizedMetadata.fraudThresholds
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching system settings', error: error.message });
     }
@@ -2415,7 +2589,9 @@ exports.updateSystemSettings = async (req, res) => {
             supportEmail,
             termsUrl,
             privacyUrl,
-            metadata
+            metadata,
+            waitlistEnabled,
+            fraudThresholds
         } = req.body;
 
         const data = {};
@@ -2427,7 +2603,28 @@ exports.updateSystemSettings = async (req, res) => {
         if (supportEmail !== undefined) data.supportEmail = supportEmail;
         if (termsUrl !== undefined) data.termsUrl = termsUrl;
         if (privacyUrl !== undefined) data.privacyUrl = privacyUrl;
-        if (metadata !== undefined) data.metadata = metadata;
+
+        const metadataUpdates = {};
+        if (metadata && typeof metadata === 'object') {
+            Object.assign(metadataUpdates, metadata);
+        }
+        if (waitlistEnabled !== undefined) {
+            metadataUpdates.waitlistEnabled = waitlistEnabled;
+        }
+        if (fraudThresholds !== undefined) {
+            metadataUpdates.fraudThresholds = fraudThresholds;
+        }
+
+        if (Object.keys(metadataUpdates).length) {
+            const existing = await prisma.systemSettings.findUnique({
+                where: { id: 'default' }
+            });
+            const currentMetadata =
+                existing?.metadata && typeof existing.metadata === 'object'
+                    ? existing.metadata
+                    : {};
+            data.metadata = { ...currentMetadata, ...metadataUpdates };
+        }
 
         if (!Object.keys(data).length) {
             return res.status(400).json({ message: 'No settings updates provided' });

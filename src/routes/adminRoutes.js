@@ -15,7 +15,7 @@ const {
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
     getAllOrders, updateOrderStatus,
     deleteCampaign,
-    getSystemSettings, updateSystemSettings, getActivityLogs
+    getSystemSettings, updateSystemSettings, getActivityLogs, getFinanceSummary
 } = require('../controllers/adminController');
 
 const {
@@ -32,6 +32,7 @@ router.use(authorize('admin'));
 
 // Dashboard
 router.get('/dashboard', getSystemStats);
+router.get('/finance/summary', getFinanceSummary);
 
 // Brand Management
 router.post('/brands', createBrand);
