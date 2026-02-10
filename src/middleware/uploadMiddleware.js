@@ -2,6 +2,12 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+const DEFAULT_MAX_FILE_SIZE_MB = 10;
+const parsedMaxSizeMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB);
+const MAX_FILE_SIZE_MB = Number.isFinite(parsedMaxSizeMb) && parsedMaxSizeMb > 0
+    ? parsedMaxSizeMb
+    : DEFAULT_MAX_FILE_SIZE_MB;
+
 // Ensure upload directory exists
 const uploadDir = 'uploads/';
 if (!fs.existsSync(uploadDir)) {
@@ -34,8 +40,10 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    limits: { fileSize: Math.round(MAX_FILE_SIZE_MB * 1024 * 1024) },
     fileFilter: fileFilter
 });
+
+upload.maxFileSizeMb = MAX_FILE_SIZE_MB;
 
 module.exports = upload;

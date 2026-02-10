@@ -11,6 +11,14 @@ const formatCashbackValue = (value) => {
     return Number.isInteger(value) ? `${value}` : value.toFixed(2);
 };
 
+const normalizeProduct = (product) => {
+    if (!product) return product;
+    return {
+        ...product,
+        mrp: product.mrp !== null && product.mrp !== undefined ? Number(product.mrp) : null
+    };
+};
+
 const getCampaignCashbackRange = (campaign, productId) => {
     if (!campaign) return null;
     const amounts = [];
@@ -38,7 +46,7 @@ const getCampaignRewardLabel = (campaign, productId) => {
     const maxLabel = formatCashbackValue(range.max);
     if (!minLabel || !maxLabel) return 'Check App';
     if (range.min === range.max) return `Up to INR ${maxLabel}`;
-    return `INR ${minLabel} - ${maxLabel}`;
+    return `Up to INR ${minLabel} - ${maxLabel}`;
 };
 
 // --- Home Data (Universal) ---
@@ -57,12 +65,13 @@ exports.getHomeData = async (req, res) => {
         ];
 
         // Featured Products
-        const featuredProducts = await prisma.product.findMany({
+        const featuredProductsRaw = await prisma.product.findMany({
             where: { status: 'active' },
             take: 4,
             orderBy: { createdAt: 'desc' },
             include: { Brand: true }
         });
+        const featuredProducts = featuredProductsRaw.map((product) => normalizeProduct(product));
 
         // Recent Coupons (New Feature)
         const featuredCoupons = await prisma.coupon.findMany({
@@ -98,11 +107,11 @@ exports.getCatalog = async (req, res) => {
         if (brandId) whereClause.brandId = brandId;
         if (category) whereClause.category = category;
 
-        const products = await prisma.product.findMany({
+        const productsRaw = await prisma.product.findMany({
             where: whereClause,
             include: { Brand: true }
         });
-        res.json(products);
+        res.json(productsRaw.map((product) => normalizeProduct(product)));
     } catch (error) {
         res.status(500).json({ message: 'Error fetching catalog', error: error.message });
     }
@@ -196,11 +205,20 @@ exports.getBrandDetails = async (req, res) => {
                 const linkedCampaign = productCampaignMap.get(p.id) || fallbackCampaign;
                 return {
                     id: p.id,
+                    brandId: p.brandId,
                     name: p.name,
                     sku: p.sku,
                     mrp: p.mrp ? Number(p.mrp) : null,
                     variant: p.variant,
+                    description: p.description,
+                    packSize: p.packSize,
+                    warranty: p.warranty,
                     image: p.imageUrl,
+                    imageUrl: p.imageUrl,
+                    bannerUrl: p.bannerUrl,
+                    status: p.status,
+                    createdAt: p.createdAt,
+                    updatedAt: p.updatedAt,
                     reward: mapReward(linkedCampaign, p.id),
                     scheme: mapScheme(linkedCampaign),
                     campaignId: linkedCampaign?.id || null,
@@ -241,8 +259,7 @@ exports.getProductDetails = async (req, res) => {
         });
 
         res.json({
-            ...product,
-            mrp: product.mrp ? Number(product.mrp) : null,
+            ...normalizeProduct(product),
             reward: getCampaignRewardLabel(activeCampaign, product.id),
             scheme: activeCampaign ? activeCampaign.title : 'Standard Offer'
         });

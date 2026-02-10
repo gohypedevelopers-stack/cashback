@@ -331,9 +331,13 @@ exports.getWithdrawalHistory = async (req, res) => {
 exports.createOrder = async (req, res) => {
     try {
         const { amount, currency = "INR", receipt, notes } = req.body;
+        const numericAmount = Number(amount);
+        if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+            return res.status(400).json({ message: "Invalid amount" });
+        }
 
         const options = {
-            amount: amount * 100, // Convert to smallest unit (paise)
+            amount: Math.round(numericAmount * 100), // Convert to paise
             currency,
             receipt: receipt || `receipt_${Date.now()}`,
             notes: notes || {}
@@ -356,6 +360,22 @@ exports.verifyPayment = async (req, res) => {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
         const userId = req.user.id;
 
+        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+            return res.status(400).json({ message: "Missing payment verification details", success: false });
+        }
+
+        // Prevent duplicate credits on retry/reload.
+        const existingRecharge = await prisma.transaction.findFirst({
+            where: {
+                referenceId: razorpay_payment_id,
+                category: 'recharge',
+                status: 'success'
+            }
+        });
+        if (existingRecharge) {
+            return res.json({ message: "Payment already verified", success: true });
+        }
+
         const body = razorpay_order_id + "|" + razorpay_payment_id;
         const expectedSignature = crypto
             .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -370,10 +390,21 @@ exports.verifyPayment = async (req, res) => {
         const order = await razorpay.orders.fetch(razorpay_order_id);
         const amountInRupees = order.amount / 100;
 
-        // Find Wallet
-        let wallet = await prisma.wallet.findUnique({ where: { userId } });
+        // Find wallet, preferring vendor wallet for vendor users.
+        let vendor = null;
+        if (req.user?.role === 'vendor') {
+            vendor = await prisma.vendor.findUnique({ where: { userId } });
+        }
+
+        let wallet = null;
+        if (vendor) {
+            wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
+        }
         if (!wallet) {
-            const vendor = await prisma.vendor.findUnique({ where: { userId } });
+            wallet = await prisma.wallet.findUnique({ where: { userId } });
+        }
+        if (!wallet && !vendor) {
+            vendor = await prisma.vendor.findUnique({ where: { userId } });
             if (vendor) {
                 wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
             }
@@ -382,11 +413,9 @@ exports.verifyPayment = async (req, res) => {
         if (!wallet) {
             // Auto-create wallet if not exists
             wallet = await prisma.wallet.create({
-                data: {
-                    userId: userId,
-                    balance: 0,
-                    currency: 'INR'
-                }
+                data: vendor
+                    ? { vendorId: vendor.id, balance: 0, currency: 'INR' }
+                    : { userId, balance: 0, currency: 'INR' }
             });
         }
 

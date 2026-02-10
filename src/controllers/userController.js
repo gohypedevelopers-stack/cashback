@@ -38,7 +38,7 @@ const getCampaignRewardLabel = (campaign, productId) => {
     const maxLabel = formatCashbackValue(range.max);
     if (!minLabel || !maxLabel) return 'Check App';
     if (range.min === range.max) return `Up to INR ${maxLabel}`;
-    return `INR ${minLabel} - ${maxLabel}`;
+    return `Up to INR ${minLabel} - ${maxLabel}`;
 };
 
 exports.getDashboard = async (req, res) => {

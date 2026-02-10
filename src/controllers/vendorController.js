@@ -1143,6 +1143,9 @@ exports.importProducts = async (req, res) => {
 exports.getVendorProducts = async (req, res) => {
     try {
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) {
+            return res.json([]);
+        }
 
         const products = await prisma.product.findMany({
             where: { Brand: { vendorId: vendor.id } },
