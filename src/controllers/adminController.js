@@ -2549,7 +2549,8 @@ exports.getSystemSettings = async (req, res) => {
             fraudThresholds: {
                 maxRedemptionsPerUser: 5,
                 maxRedeemerSharePercent: 40
-            }
+            },
+            homeBanners: []
         };
         let settings = await prisma.systemSettings.findUnique({
             where: { id: 'default' }
@@ -2656,7 +2657,7 @@ exports.updateSystemSettings = async (req, res) => {
 
 exports.getActivityLogs = async (req, res) => {
     try {
-        const { page, limit, skip } = parsePagination(req.query, { defaultLimit: 50, maxLimit: 200 });
+        const { page, limit, skip } = parsePagination(req, { defaultLimit: 50, maxLimit: 200 });
         const { action, actorRole, vendorId, brandId, campaignId, startDate, endDate } = req.query;
 
         const where = {};

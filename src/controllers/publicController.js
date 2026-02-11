@@ -52,17 +52,29 @@ const getCampaignRewardLabel = (campaign, productId) => {
 // --- Home Data (Universal) ---
 exports.getHomeData = async (req, res) => {
     try {
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+        const rawBanners = settings?.metadata?.homeBanners;
+        const banners = Array.isArray(rawBanners)
+            ? rawBanners
+                .map((banner, index) => ({
+                    id: banner?.id || banner?.key || banner?.slug || index + 1,
+                    title: banner?.title || banner?.heading || '',
+                    subtitle: banner?.subtitle || banner?.subTitle || banner?.caption || '',
+                    img: banner?.img || banner?.imageUrl || banner?.image || banner?.bannerImage || '',
+                    accent: banner?.accent || banner?.gradient || '',
+                    link: banner?.link || banner?.ctaLink || ''
+                }))
+                .filter((banner) => banner.title || banner.subtitle || banner.img)
+            : [];
+
         const brands = await prisma.brand.findMany({
             where: { status: 'active' },
             take: 6,
             select: { id: true, name: true, logoUrl: true }
         });
-
-        // Mock Banners (Move to DB if needed later)
-        const banners = [
-            { id: 1, title: "Get Upto â‚¹15000 on Scanning Products", subtitle: "From Double Tiger Tea", bg: "bg-teal-900", img: "/placeholder.svg" },
-            { id: 2, title: "Win Gold Coins Daily", subtitle: "Scan Heritage Milk Packs", bg: "bg-blue-900", img: "/placeholder.svg" }
-        ];
 
         // Featured Products
         const featuredProductsRaw = await prisma.product.findMany({

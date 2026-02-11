@@ -378,17 +378,29 @@ exports.markNotificationRead = async (req, res) => {
 
 exports.getHomeData = async (req, res) => {
     try {
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+        const rawBanners = settings?.metadata?.homeBanners;
+        const banners = Array.isArray(rawBanners)
+            ? rawBanners
+                .map((banner, index) => ({
+                    id: banner?.id || banner?.key || banner?.slug || index + 1,
+                    title: banner?.title || banner?.heading || '',
+                    subtitle: banner?.subtitle || banner?.subTitle || banner?.caption || '',
+                    img: banner?.img || banner?.imageUrl || banner?.image || banner?.bannerImage || '',
+                    accent: banner?.accent || banner?.gradient || '',
+                    link: banner?.link || banner?.ctaLink || ''
+                }))
+                .filter((banner) => banner.title || banner.subtitle || banner.img)
+            : [];
+
         const brands = await prisma.brand.findMany({
             where: { status: 'active' },
             take: 6,
             select: { id: true, name: true, logoUrl: true }
         });
-
-        // Mocking Banners for now (could be dynamic in future)
-        const banners = [
-            { id: 1, title: "Join the Cashback Revolution", subtitle: "Scan & Earn Instantly", bg: "bg-teal-900", img: "/placeholder.svg" },
-            { id: 2, title: "Trusted Brands Only", subtitle: "100% Authentic Products", bg: "bg-blue-900", img: "/placeholder.svg" }
-        ];
 
         // Featured Products (Latest 4)
         const featuredProducts = await prisma.product.findMany({
