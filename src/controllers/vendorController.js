@@ -1867,8 +1867,26 @@ exports.downloadOrderQrPdf = async (req, res) => {
             req
         });
 
+        try {
+            await createVendorNotification({
+                vendorId: vendor.id,
+                title: 'Order PDF downloaded',
+                message: `Downloaded QR PDF for order #${order.id.slice(-6)} (${campaign?.title || 'Campaign'}).`,
+                type: 'pdf-downloaded',
+                metadata: {
+                    tab: 'campaigns',
+                    orderId: order.id,
+                    campaignId: order.campaignId,
+                    qrCount: order.QRCodes.length
+                }
+            });
+        } catch (notificationError) {
+            console.error('Order PDF notification error:', notificationError.message);
+        }
+
     } catch (error) {
         console.error('PDF Download Error:', error);
+        if (res.headersSent) return;
         res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
     }
 };
@@ -1977,8 +1995,25 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             req
         });
 
+        try {
+            await createVendorNotification({
+                vendorId: vendor.id,
+                title: 'Campaign PDF downloaded',
+                message: `Downloaded QR PDF for campaign "${campaign.title}".`,
+                type: 'pdf-downloaded',
+                metadata: {
+                    tab: 'campaigns',
+                    campaignId,
+                    qrCount: qrCodes.length
+                }
+            });
+        } catch (notificationError) {
+            console.error('Campaign PDF notification error:', notificationError.message);
+        }
+
     } catch (error) {
         console.error('[CampaignPDF] Error:', error.message, error.stack);
+        if (res.headersSent) return;
         res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
     }
 };
