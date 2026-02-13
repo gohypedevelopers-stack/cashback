@@ -44,6 +44,7 @@ model Vendor {
   rejectionReason   String?
   status            VendorStatus        @default(pending)
   contactEmail      String?
+  techFeePerQr      Decimal             @default(0.00) @db.Decimal(10, 2)
   ActivityLog       ActivityLog[]
   CredentialRequests CredentialRequest[]
   Brand             Brand?

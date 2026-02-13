@@ -1417,13 +1417,14 @@ exports.getAllTransactions = async (req, res) => {
 exports.getAllQRs = async (req, res) => {
     try {
         const { page, limit, skip } = parsePagination(req, { defaultLimit: 100, maxLimit: 500 });
-        const { campaignId, vendorId, brandId, status, from, to, search } = req.query;
+        const { campaignId, vendorId, brandId, status, from, to, search, redeemedByUserId } = req.query;
         const where = {};
         const campaignWhere = {};
 
         if (campaignId) where.campaignId = campaignId;
         if (vendorId) where.vendorId = vendorId;
         if (status) where.status = status;
+        if (redeemedByUserId) where.redeemedByUserId = redeemedByUserId;
         if (search) {
             where.uniqueHash = { contains: String(search), mode: 'insensitive' };
         }
@@ -2008,7 +2009,7 @@ exports.getVendorOverview = async (req, res) => {
 exports.updateVendorDetails = async (req, res) => {
     try {
         const { id } = req.params;
-        const { businessName, contactPhone, contactEmail, gstin, address } = req.body;
+        const { businessName, contactPhone, contactEmail, gstin, address, techFeePerQr } = req.body;
         const data = {};
 
         if (businessName !== undefined) data.businessName = businessName;
@@ -2016,6 +2017,12 @@ exports.updateVendorDetails = async (req, res) => {
         if (contactEmail !== undefined) data.contactEmail = contactEmail;
         if (gstin !== undefined) data.gstin = gstin;
         if (address !== undefined) data.address = address;
+        if (techFeePerQr !== undefined) {
+            const fee = parseFloat(techFeePerQr);
+            if (!isNaN(fee) && fee >= 0) {
+                data.techFeePerQr = fee;
+            }
+        }
 
         if (!Object.keys(data).length) {
             return res.status(400).json({ message: 'No vendor updates provided' });
