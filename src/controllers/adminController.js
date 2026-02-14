@@ -1262,13 +1262,16 @@ exports.getAllUsers = async (req, res) => {
                     id: true,
                     name: true,
                     email: true,
+                    username: true,
                     phoneNumber: true,
                     status: true,
                     createdAt: true,
+                    updatedAt: true,
                     Wallet: {
                         select: {
                             id: true,
                             balance: true,
+                            lockedBalance: true,
                             currency: true
                         }
                     }
@@ -1319,6 +1322,231 @@ exports.updateUserStatus = async (req, res) => {
         res.json({ message: `User ${status}`, user });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.updateUserDetails = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, email, username, phoneNumber, status } = req.body || {};
+
+        const existingUser = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                role: true,
+                email: true,
+                username: true,
+                phoneNumber: true,
+                status: true
+            }
+        });
+
+        if (!existingUser || existingUser.role !== 'customer') {
+            return res.status(404).json({ message: 'Customer not found' });
+        }
+
+        const updates = {};
+        if (name !== undefined) updates.name = String(name || '').trim() || null;
+        if (email !== undefined) updates.email = String(email || '').trim().toLowerCase() || null;
+        if (username !== undefined) updates.username = String(username || '').trim() || null;
+        if (phoneNumber !== undefined) updates.phoneNumber = String(phoneNumber || '').trim() || null;
+        if (status !== undefined) {
+            if (!['active', 'inactive', 'blocked'].includes(status)) {
+                return res.status(400).json({ message: 'Invalid status' });
+            }
+            updates.status = status;
+        }
+
+        if (!Object.keys(updates).length) {
+            return res.status(400).json({ message: 'No user updates provided' });
+        }
+
+        if (updates.email) {
+            const duplicateEmail = await prisma.user.findUnique({
+                where: { email: updates.email },
+                select: { id: true }
+            });
+            if (duplicateEmail && duplicateEmail.id !== id) {
+                return res.status(409).json({ message: 'Email already in use' });
+            }
+        }
+
+        if (updates.username) {
+            const duplicateUsername = await prisma.user.findUnique({
+                where: { username: updates.username },
+                select: { id: true }
+            });
+            if (duplicateUsername && duplicateUsername.id !== id) {
+                return res.status(409).json({ message: 'Username already in use' });
+            }
+        }
+
+        if (updates.phoneNumber) {
+            const duplicatePhone = await prisma.user.findUnique({
+                where: { phoneNumber: updates.phoneNumber },
+                select: { id: true }
+            });
+            if (duplicatePhone && duplicatePhone.id !== id) {
+                return res.status(409).json({ message: 'Phone number already in use' });
+            }
+        }
+
+        const user = await prisma.user.update({
+            where: { id },
+            data: updates,
+            select: {
+                id: true,
+                role: true,
+                name: true,
+                email: true,
+                username: true,
+                phoneNumber: true,
+                status: true,
+                createdAt: true,
+                updatedAt: true,
+                Wallet: {
+                    select: {
+                        id: true,
+                        balance: true,
+                        lockedBalance: true,
+                        currency: true
+                    }
+                }
+            }
+        });
+
+        safeLogActivity({
+            actorUserId: req.user?.id,
+            actorRole: req.user?.role,
+            action: 'user_details_update',
+            entityType: 'user',
+            entityId: user.id,
+            metadata: {
+                updatedFields: Object.keys(updates),
+                status: updates.status
+            },
+            req
+        });
+
+        res.json({ message: 'User updated successfully', user });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to update user', error: error.message });
+    }
+};
+
+exports.getUserOverview = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const user = await prisma.user.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                role: true,
+                name: true,
+                email: true,
+                username: true,
+                phoneNumber: true,
+                status: true,
+                avatarUrl: true,
+                createdAt: true,
+                updatedAt: true,
+                Wallet: {
+                    select: {
+                        id: true,
+                        balance: true,
+                        lockedBalance: true,
+                        currency: true,
+                        updatedAt: true
+                    }
+                },
+                PayoutMethods: {
+                    select: {
+                        id: true,
+                        type: true,
+                        value: true,
+                        isPrimary: true,
+                        createdAt: true
+                    },
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: 'Customer not found' });
+        }
+        if (user.role !== 'customer') {
+            return res.status(400).json({ message: 'Overview is available for customer accounts only' });
+        }
+
+        const [transactions, redemptions, supportTickets, notifications] = await Promise.all([
+            user.Wallet?.id
+                ? prisma.transaction.findMany({
+                    where: { walletId: user.Wallet.id },
+                    orderBy: { createdAt: 'desc' },
+                    take: 100
+                })
+                : Promise.resolve([]),
+            prisma.qRCode.findMany({
+                where: { redeemedByUserId: id, status: 'redeemed' },
+                orderBy: { redeemedAt: 'desc' },
+                take: 100,
+                include: {
+                    Campaign: {
+                        select: {
+                            id: true,
+                            title: true,
+                            Brand: {
+                                select: { id: true, name: true }
+                            }
+                        }
+                    }
+                }
+            }),
+            prisma.supportTicket.findMany({
+                where: { userId: id },
+                orderBy: { createdAt: 'desc' },
+                take: 100
+            }),
+            prisma.notification.findMany({
+                where: { userId: id },
+                orderBy: { createdAt: 'desc' },
+                take: 100
+            })
+        ]);
+
+        const metrics = {
+            totalTransactions: transactions.length,
+            credits: transactions.filter((tx) => tx.type === 'credit').length,
+            debits: transactions.filter((tx) => tx.type === 'debit').length,
+            totalCreditedAmount: transactions.reduce((sum, tx) => {
+                return tx.type === 'credit' ? sum + Number(tx.amount || 0) : sum;
+            }, 0),
+            totalDebitedAmount: transactions.reduce((sum, tx) => {
+                return tx.type === 'debit' ? sum + Number(tx.amount || 0) : sum;
+            }, 0),
+            totalRedemptions: redemptions.length,
+            totalCashbackEarned: redemptions.reduce((sum, qr) => {
+                return sum + Number(qr.cashbackAmount || 0);
+            }, 0),
+            totalSupportTickets: supportTickets.length,
+            openSupportTickets: supportTickets.filter((t) => String(t.status || '').toLowerCase() === 'open').length,
+            notifications: notifications.length,
+            unreadNotifications: notifications.filter((n) => !n.isRead).length
+        };
+
+        res.json({
+            user,
+            metrics,
+            transactions,
+            redemptions,
+            supportTickets,
+            notifications
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch user overview', error: error.message });
     }
 };
 

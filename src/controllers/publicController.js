@@ -310,22 +310,63 @@ exports.createBrandInquiry = async (req, res) => {
         const customerEmail = typeof email === 'string' ? email.trim() : '';
         const customerPhone = typeof phone === 'string' ? phone.trim() : '';
 
-        await prisma.notification.create({
-            data: {
-                userId: brand.Vendor.userId,
-                title: `New customer query${brand.name ? ` - ${brand.name}` : ''}`,
-                message: trimmedMessage,
-                type: 'brand-inquiry',
-                metadata: {
-                    tab: 'support',
-                    brandId: brand.id,
-                    brandName: brand.name,
-                    customerName: customerName || null,
-                    customerEmail: customerEmail || null,
-                    customerPhone: customerPhone || null
-                }
-            }
+        const contactBits = [
+            customerName ? `Name: ${customerName}` : null,
+            customerEmail ? `Email: ${customerEmail}` : null,
+            customerPhone ? `Phone: ${customerPhone}` : null
+        ].filter(Boolean);
+        const adminMessage = contactBits.length
+            ? `${contactBits.join(' | ')} | Message: ${trimmedMessage}`
+            : trimmedMessage;
+
+        const adminUsers = await prisma.user.findMany({
+            where: { role: 'admin', status: 'active' },
+            select: { id: true }
         });
+
+        const commonMetadata = {
+            tab: 'support',
+            brandId: brand.id,
+            brandName: brand.name,
+            vendorId: brand.Vendor.id,
+            vendorUserId: brand.Vendor.userId,
+            customerName: customerName || null,
+            customerEmail: customerEmail || null,
+            customerPhone: customerPhone || null
+        };
+
+        const writeOps = [
+            prisma.notification.create({
+                data: {
+                    userId: brand.Vendor.userId,
+                    title: `New customer query${brand.name ? ` - ${brand.name}` : ''}`,
+                    message: trimmedMessage,
+                    type: 'brand-inquiry',
+                    metadata: commonMetadata
+                }
+            })
+        ];
+
+        const adminNotifications = adminUsers
+            .map((admin) => admin.id)
+            .filter((adminId) => adminId !== brand.Vendor.userId)
+            .map((adminId) => ({
+                userId: adminId,
+                title: `Customer inquiry for ${brand.name || 'brand'}`,
+                message: adminMessage,
+                type: 'brand-inquiry-admin',
+                metadata: commonMetadata
+            }));
+
+        if (adminNotifications.length) {
+            writeOps.push(
+                prisma.notification.createMany({
+                    data: adminNotifications
+                })
+            );
+        }
+
+        await prisma.$transaction(writeOps);
 
         res.status(201).json({ message: 'Your query has been sent to the brand.' });
     } catch (error) {

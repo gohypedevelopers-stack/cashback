@@ -25,13 +25,13 @@ async function main() {
 
     if (existingAdmin) {
         console.log(`Admin user already exists: ${adminEmail}`);
-        // Optional: Update password if you want to force reset
-        // const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        // await prisma.user.update({
-        //     where: { id: existingAdmin.id },
-        //     data: { password: hashedPassword, role: 'admin' }
-        // });
-        // console.log("Admin password reset.");
+        // Force update password to ensure known credentials work
+        const hashedPassword = await bcrypt.hash(adminPassword, 10);
+        await prisma.user.update({
+            where: { id: existingAdmin.id },
+            data: { password: hashedPassword, role: 'admin' }
+        });
+        console.log("Admin password reset to default.");
     } else {
         const hashedPassword = await bcrypt.hash(adminPassword, 10);
 

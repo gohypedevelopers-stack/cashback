@@ -9,6 +9,16 @@ const generateQRHash = () => {
     return crypto.randomBytes(32).toString('hex');
 };
 
+const resolveTechFeePerQr = ({ vendor, brand }) => {
+    const vendorTechFee = Number(vendor?.techFeePerQr);
+    if (Number.isFinite(vendorTechFee) && vendorTechFee > 0) return vendorTechFee;
+
+    const legacyQrPrice = Number(brand?.qrPricePerUnit);
+    if (Number.isFinite(legacyQrPrice) && legacyQrPrice > 0) return legacyQrPrice;
+
+    return 1;
+};
+
 // Helper: Ensure Vendor and Wallet exist
 const ensureVendorAndWallet = async (userId, tx = prisma) => {
     let vendor = await tx.vendor.findUnique({ where: { userId } });
@@ -210,8 +220,10 @@ exports.orderQRs = async (req, res) => {
         const result = await prisma.$transaction(async (tx) => {
             const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
 
-            const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
-            const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
+            const printCostPerQr = resolveTechFeePerQr({
+                vendor,
+                brand: campaign?.Brand
+            });
 
             // Use the cashbackAmount from the request (per-QR amount)
             const totalCashbackCost = qrCashback * parsedQuantity;
@@ -248,7 +260,7 @@ exports.orderQRs = async (req, res) => {
                     amount: totalCost,
                     category: 'qr_purchase',
                     status: 'success',
-                    description: `Purchased ${parsedQuantity} QRs (INR ${qrCashback} cashback + INR ${printCostPerQr} print per QR) for Campaign ${campaign.title}`,
+                    description: `Purchased ${parsedQuantity} QRs (INR ${qrCashback} cashback + INR ${printCostPerQr} tech fee per QR) for Campaign ${campaign.title}`,
                     referenceId: order.id
                 }
             });
@@ -1508,8 +1520,10 @@ exports.createOrder = async (req, res) => {
         }
 
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
-        const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
+        const printCostPerQr = resolveTechFeePerQr({
+            vendor,
+            brand: campaign?.Brand
+        });
         const totalPrintCost = printCostPerQr * parsedQuantity;
 
         // Create order (status: pending)
@@ -1701,8 +1715,10 @@ exports.payCampaign = async (req, res) => {
         // Ensure allocations is an array
         const allocArray = Array.isArray(allocations) ? allocations : [];
         const totalQty = allocArray.reduce((sum, a) => sum + (parseInt(a.quantity) || 0), 0);
-        const rawPrintCost = Number(campaign?.Brand?.qrPricePerUnit ?? 1);
-        const printCostPerQr = Number.isFinite(rawPrintCost) && rawPrintCost > 0 ? rawPrintCost : 1;
+        const printCostPerQr = resolveTechFeePerQr({
+            vendor,
+            brand: campaign?.Brand
+        });
         const printCost = totalQty * printCostPerQr;
 
         const baseBudget = Number(campaign.subtotal ?? campaign.totalBudget ?? 0);
@@ -1731,7 +1747,7 @@ exports.payCampaign = async (req, res) => {
                     amount: totalCost,
                     category: 'campaign_payment',
                     status: 'success',
-                    description: `Payment for Campaign: ${campaign.title} (Cashback: ${campaign.totalBudget} + Print: ${printCost})`,
+                    description: `Payment for Campaign: ${campaign.title} (Cashback: ${campaign.totalBudget} + Tech fee: ${printCost})`,
                     referenceId: campaign.id
                 }
             });
