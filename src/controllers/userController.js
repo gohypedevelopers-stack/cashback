@@ -1,9 +1,33 @@
-﻿const prisma = require('../config/prismaClient');
+const prisma = require('../config/prismaClient');
 const bcrypt = require('bcryptjs');
+const { storeProducts } = require('../data/publicCatalog');
 
 const toPositiveNumber = (value) => {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+};
+
+const normalizeCatalogText = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const sanitizeRedeemStoreProduct = (product, index = 0) => {
+    const name = normalizeCatalogText(product?.name);
+    if (!name) return null;
+
+    const statusRaw = normalizeCatalogText(product?.status).toLowerCase();
+    const amountRaw = Number(product?.amount ?? product?.points);
+    const stockRaw = Number(product?.stock);
+    const id =
+        normalizeCatalogText(product?.id) ||
+        normalizeCatalogText(product?.sku) ||
+        `redeem-product-${index + 1}`;
+
+    return {
+        id,
+        name,
+        amount: Number.isFinite(amountRaw) && amountRaw > 0 ? amountRaw : 0,
+        stock: Number.isFinite(stockRaw) ? Math.max(0, Math.floor(stockRaw)) : null,
+        status: statusRaw === 'inactive' ? 'inactive' : 'active'
+    };
 };
 
 const formatCashbackValue = (value) => {
@@ -510,3 +534,126 @@ exports.getHomeStats = async (req, res) => {
         res.status(500).json({ message: 'Error fetching home stats', error: error.message });
     }
 };
+
+exports.redeemStoreProduct = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const productId = normalizeCatalogText(req.body?.productId);
+
+        if (!productId) {
+            return res.status(400).json({ message: 'Product ID is required' });
+        }
+
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+
+        const metadata =
+            settings?.metadata && typeof settings.metadata === 'object'
+                ? settings.metadata
+                : {};
+        const redeemStore =
+            metadata?.redeemStore && typeof metadata.redeemStore === 'object'
+                ? metadata.redeemStore
+                : {};
+        const configuredProducts = Array.isArray(redeemStore.products)
+            ? redeemStore.products
+            : [];
+        const products = configuredProducts.length ? configuredProducts : storeProducts;
+        const normalizedProducts = products
+            .map((item, index) => sanitizeRedeemStoreProduct(item, index))
+            .filter(Boolean);
+
+        const selectedProduct = normalizedProducts.find(
+            (item) => String(item.id).toLowerCase() === productId.toLowerCase()
+        );
+
+        if (!selectedProduct || selectedProduct.status !== 'active') {
+            return res.status(404).json({ message: 'Product not available for redeem' });
+        }
+
+        if (!Number.isFinite(selectedProduct.amount) || selectedProduct.amount <= 0) {
+            return res.status(400).json({ message: 'Product amount is invalid' });
+        }
+
+        if (Number.isFinite(selectedProduct.stock) && selectedProduct.stock <= 0) {
+            return res.status(400).json({ message: 'Product is out of stock' });
+        }
+
+        let walletAfterRedeem = null;
+
+        await prisma.$transaction(async (tx) => {
+            let wallet = await tx.wallet.findUnique({ where: { userId } });
+            if (!wallet) {
+                wallet = await tx.wallet.create({
+                    data: {
+                        userId,
+                        balance: 0.0,
+                        currency: 'INR'
+                    }
+                });
+            }
+
+            const currentBalance = Number(wallet.balance);
+            if (!Number.isFinite(currentBalance) || currentBalance < selectedProduct.amount) {
+                const insufficient = new Error('Insufficient wallet balance');
+                insufficient.code = 'INSUFFICIENT_BALANCE';
+                throw insufficient;
+            }
+
+            walletAfterRedeem = await tx.wallet.update({
+                where: { id: wallet.id },
+                data: {
+                    balance: { decrement: selectedProduct.amount }
+                }
+            });
+
+            await tx.transaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'debit',
+                    amount: selectedProduct.amount,
+                    category: 'withdrawal',
+                    status: 'success',
+                    referenceId: selectedProduct.id,
+                    description: `Store redeem: ${selectedProduct.name}`
+                }
+            });
+
+            await tx.notification.create({
+                data: {
+                    userId,
+                    title: 'Redeem successful',
+                    message: `${selectedProduct.name} redeemed for INR ${selectedProduct.amount.toFixed(2)}.`,
+                    type: 'store-redeem',
+                    metadata: {
+                        tab: 'store',
+                        productId: selectedProduct.id,
+                        amount: selectedProduct.amount
+                    }
+                }
+            });
+        });
+
+        return res.status(201).json({
+            success: true,
+            message: 'Product redeemed successfully',
+            redeem: {
+                productId: selectedProduct.id,
+                name: selectedProduct.name,
+                amount: selectedProduct.amount
+            },
+            wallet: {
+                balance: Number(walletAfterRedeem?.balance || 0),
+                currency: walletAfterRedeem?.currency || 'INR'
+            }
+        });
+    } catch (error) {
+        if (error?.code === 'INSUFFICIENT_BALANCE') {
+            return res.status(400).json({ message: 'Insufficient wallet balance' });
+        }
+        res.status(500).json({ message: 'Failed to redeem product', error: error.message });
+    }
+};
+

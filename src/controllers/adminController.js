@@ -2785,7 +2785,10 @@ exports.getSystemSettings = async (req, res) => {
                 maxRedemptionsPerUser: 5,
                 maxRedeemerSharePercent: 40
             },
-            homeBanners: []
+            homeBanners: [],
+            redeemStore: {
+                products: []
+            }
         };
         let settings = await prisma.systemSettings.findUnique({
             where: { id: 'default' }

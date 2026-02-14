@@ -19,6 +19,67 @@ const normalizeProduct = (product) => {
     };
 };
 
+const DEFAULT_REDEEM_PRODUCT_CATEGORY = 'Popular';
+const REDEEM_PRODUCT_STATUSES = new Set(['active', 'inactive']);
+
+const normalizeCatalogText = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const sanitizeStoreTab = (tab) => {
+    const id = normalizeCatalogText(tab?.id).toLowerCase();
+    const label = normalizeCatalogText(tab?.label);
+    if (!id || !label) return null;
+    return { id, label };
+};
+
+const sanitizeStoreProduct = (item, index) => {
+    const name = normalizeCatalogText(item?.name);
+    if (!name) return null;
+
+    const amountValue = Number(item?.amount ?? item?.points);
+    const amount = Number.isFinite(amountValue) && amountValue >= 0 ? amountValue : 0;
+    const category = normalizeCatalogText(item?.category) || DEFAULT_REDEEM_PRODUCT_CATEGORY;
+    const statusRaw = normalizeCatalogText(item?.status).toLowerCase();
+    const status = REDEEM_PRODUCT_STATUSES.has(statusRaw) ? statusRaw : 'active';
+    const id =
+        normalizeCatalogText(item?.id) ||
+        normalizeCatalogText(item?.sku) ||
+        `redeem-product-${index + 1}`;
+    const image =
+        normalizeCatalogText(item?.image) ||
+        normalizeCatalogText(item?.imageUrl);
+
+    return {
+        id,
+        name,
+        amount,
+        points: amount,
+        category,
+        description: normalizeCatalogText(item?.description),
+        image: image || '',
+        value: normalizeCatalogText(item?.value),
+        brand: normalizeCatalogText(item?.brand),
+        stock: Number.isFinite(Number(item?.stock))
+            ? Math.max(0, Math.floor(Number(item.stock)))
+            : null,
+        status
+    };
+};
+
+const normalizeCategoryList = (categories) => {
+    if (!Array.isArray(categories)) return [];
+    const deduped = [];
+    const seen = new Set();
+    categories.forEach((raw) => {
+        const value = normalizeCatalogText(raw);
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        deduped.push(value);
+    });
+    return deduped;
+};
+
 const getCampaignCashbackRange = (campaign, productId) => {
     if (!campaign) return null;
     const amounts = [];
@@ -407,13 +468,56 @@ exports.getGiftCardDetails = (req, res) => {
     res.json(card);
 };
 
-exports.getStoreData = (_req, res) => {
-    res.json({
-        tabs: storeTabs,
-        categories: storeCategories,
-        vouchers,
-        products: storeProducts
-    });
+exports.getStoreData = async (_req, res) => {
+    try {
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+        const metadata =
+            settings?.metadata && typeof settings.metadata === 'object'
+                ? settings.metadata
+                : {};
+        const redeemStore =
+            metadata?.redeemStore && typeof metadata.redeemStore === 'object'
+                ? metadata.redeemStore
+                : {};
+
+        const configuredTabs = Array.isArray(redeemStore.tabs)
+            ? redeemStore.tabs.map(sanitizeStoreTab).filter(Boolean)
+            : [];
+
+        const configuredProducts = Array.isArray(redeemStore.products)
+            ? redeemStore.products
+                .map((item, index) => sanitizeStoreProduct(item, index))
+                .filter(Boolean)
+                .filter((product) => product.status !== 'inactive')
+            : [];
+
+        const products = configuredProducts.length ? configuredProducts : storeProducts;
+        const categoriesFromProducts = products
+            .map((product) => normalizeCatalogText(product?.category))
+            .filter(Boolean);
+        const categoriesFromVouchers = vouchers
+            .map((voucher) => normalizeCatalogText(voucher?.category))
+            .filter(Boolean);
+        const configuredCategories = normalizeCategoryList(redeemStore.categories);
+        const mergedCategories = normalizeCategoryList([
+            ...(configuredCategories.length ? configuredCategories : []),
+            ...storeCategories,
+            ...categoriesFromVouchers,
+            ...categoriesFromProducts
+        ]);
+
+        res.json({
+            tabs: configuredTabs.length ? configuredTabs : storeTabs,
+            categories: mergedCategories.length ? mergedCategories : storeCategories,
+            vouchers,
+            products
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error loading store data', error: error.message });
+    }
 };
 
 exports.getFAQs = async (req, res) => {
