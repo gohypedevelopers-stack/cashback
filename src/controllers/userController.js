@@ -346,7 +346,13 @@ exports.getActiveBrands = async (req, res) => {
 
 exports.createSupportTicket = async (req, res) => {
     try {
-        const { subject, message } = req.body;
+        const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
+        const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+
+        if (!subject || !message) {
+            return res.status(400).json({ message: 'Subject and message are required' });
+        }
+
         const ticket = await prisma.supportTicket.create({
             data: {
                 userId: req.user.id,
@@ -355,6 +361,32 @@ exports.createSupportTicket = async (req, res) => {
                 status: 'open'
             }
         });
+
+        const admins = await prisma.user.findMany({
+            where: { role: 'admin', status: 'active' },
+            select: { id: true }
+        });
+
+        if (admins.length) {
+            const reporterLabel = req.user?.name || req.user?.email || `User ${String(req.user?.id || '').slice(0, 8)}`;
+            const isProductReport = /^product report(?:\b|:|-)/i.test(subject);
+            const notifications = admins.map((admin) => ({
+                userId: admin.id,
+                title: isProductReport ? 'New Product Report' : 'New Support Ticket',
+                message: `${reporterLabel} submitted: ${subject}`,
+                type: 'support_ticket',
+                metadata: {
+                    tab: 'support',
+                    ticketId: ticket.id,
+                    reporterUserId: req.user.id
+                }
+            }));
+
+            await prisma.notification.createMany({
+                data: notifications
+            });
+        }
+
         res.status(201).json({ message: 'Support ticket created', ticket });
     } catch (error) {
         res.status(500).json({ message: 'Ticket creation failed', error: error.message });

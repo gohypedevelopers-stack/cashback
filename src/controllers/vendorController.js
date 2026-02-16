@@ -2243,36 +2243,3 @@ exports.getVendorSupportTickets = async (req, res) => {
     }
 };
 
-// B13: Get Customer Brand Inquiries (Notifications)
-exports.getVendorBrandInquiries = async (req, res) => {
-    try {
-        const { page, limit, skip } = parsePagination(req);
-        const whereClause = { userId: req.user.id, type: 'brand-inquiry' };
-
-        const [items, total] = await Promise.all([
-            prisma.notification.findMany({
-                where: whereClause,
-                skip,
-                take: limit,
-                orderBy: { createdAt: 'desc' }
-            }),
-            prisma.notification.count({ where: whereClause })
-        ]);
-
-        res.json({
-            items,
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.ceil(total / limit)
-            }
-        });
-    } catch (error) {
-        console.error('[VendorBrandInquiries] Fetch Error:', error);
-        res.status(500).json({ message: 'Failed to fetch brand inquiries', error: error.message });
-    }
-};
-
-
-

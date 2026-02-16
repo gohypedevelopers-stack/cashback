@@ -37,8 +37,7 @@ const {
     downloadCampaignQrPdf,
     getVendorRedemptions,
     createVendorSupportTicket,
-    getVendorSupportTickets,
-    getVendorBrandInquiries
+    getVendorSupportTickets
 } = require('../controllers/vendorController');
 
 router.use(protect);
@@ -70,7 +69,6 @@ router.get('/transactions', getVendorTransactions);
 // Support Tickets (Open - vendor can always contact support)
 router.get('/support', getVendorSupportTickets);
 router.post('/support', createVendorSupportTicket);
-router.get('/brand-inquiries', getVendorBrandInquiries);
 
 // --- VENDOR ROUTES (No Subscription Gating) ---
 const restrictedRouter = express.Router();
