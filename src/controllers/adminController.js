@@ -4,6 +4,8 @@ const crypto = require('crypto');
 const { calculateSubscriptionWindow, normalizeSubscriptionType } = require('../utils/subscriptionUtils');
 const { parsePagination } = require('../utils/pagination');
 const { safeLogActivity } = require('../utils/activityLogger');
+const { seedVendorInventory } = require('../services/qrInventoryService');
+const { ensureVendorWallet } = require('../services/walletService');
 
 const slugifyBrandName = (value = 'brand') => {
     return value
@@ -823,12 +825,27 @@ exports.verifyVendor = async (req, res) => {
         const shouldStoreReason = ['rejected', 'paused'].includes(normalizedStatus);
         const reasonValue = shouldStoreReason ? (reason || null) : null;
 
-        const vendor = await prisma.vendor.update({
-            where: { id },
-            data: {
-                status: normalizedStatus,
-                rejectionReason: reasonValue
+        const existingVendor = await prisma.vendor.findUnique({ where: { id } });
+        if (!existingVendor) {
+            return res.status(404).json({ message: 'Vendor not found' });
+        }
+
+        let inventorySeeded = { created: 0, total: 0 };
+        const vendor = await prisma.$transaction(async (tx) => {
+            const updatedVendor = await tx.vendor.update({
+                where: { id },
+                data: {
+                    status: normalizedStatus,
+                    rejectionReason: reasonValue
+                }
+            });
+
+            if (normalizedStatus === 'active' && existingVendor.status !== 'active') {
+                await ensureVendorWallet(tx, updatedVendor.id);
+                inventorySeeded = await seedVendorInventory(tx, updatedVendor.id, 1000);
             }
+
+            return updatedVendor;
         });
 
         const brand = await prisma.brand.findUnique({ where: { vendorId: vendor.id } });
@@ -863,7 +880,11 @@ exports.verifyVendor = async (req, res) => {
                 req
             });
         }
-        res.json({ message: `Vendor ${normalizedStatus}`, vendor });
+        res.json({
+            message: `Vendor ${normalizedStatus}`,
+            vendor,
+            inventorySeeded
+        });
     } catch (error) {
         res.status(500).json({ message: 'Verification failed', error: error.message });
     }

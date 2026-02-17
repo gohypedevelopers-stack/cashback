@@ -362,6 +362,53 @@ exports.createSupportTicket = async (req, res) => {
             }
         });
 
+        const isProductReport = /^product report(?:\b|:|-)/i.test(subject);
+        if (isProductReport) {
+            const extractContextValue = (label) => {
+                const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const matcher = new RegExp(`^${escapedLabel}\\s*:\\s*(.+)$`, 'im');
+                const match = String(message || '').match(matcher);
+                return match ? String(match[1] || '').trim() : '';
+            };
+
+            const productId = extractContextValue('Product ID');
+            const brandId = extractContextValue('Brand ID');
+
+            let vendorId = null;
+            if (brandId) {
+                const brand = await prisma.brand.findUnique({
+                    where: { id: brandId },
+                    select: { vendorId: true }
+                });
+                vendorId = brand?.vendorId || null;
+            }
+
+            if (!vendorId && productId) {
+                const product = await prisma.product.findUnique({
+                    where: { id: productId },
+                    select: {
+                        Brand: {
+                            select: { vendorId: true }
+                        }
+                    }
+                });
+                vendorId = product?.Brand?.vendorId || null;
+            }
+
+            if (vendorId) {
+                await prisma.productReport.create({
+                    data: {
+                        vendorId,
+                        productId: productId || null,
+                        userId: req.user.id,
+                        title: subject,
+                        description: message,
+                        fileName: `product-report-${ticket.id}.txt`
+                    }
+                });
+            }
+        }
+
         const admins = await prisma.user.findMany({
             where: { role: 'admin', status: 'active' },
             select: { id: true }
@@ -369,7 +416,6 @@ exports.createSupportTicket = async (req, res) => {
 
         if (admins.length) {
             const reporterLabel = req.user?.name || req.user?.email || `User ${String(req.user?.id || '').slice(0, 8)}`;
-            const isProductReport = /^product report(?:\b|:|-)/i.test(subject);
             const notifications = admins.map((admin) => ({
                 userId: admin.id,
                 title: isProductReport ? 'New Product Report' : 'New Support Ticket',

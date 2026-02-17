@@ -17,6 +17,7 @@ const {
     getCouponDetails
 } = require('../controllers/publicController');
 const { verifyQR } = require('../controllers/redemptionController');
+const { getSharedInvoice } = require('../controllers/vendorController');
 
 // Universal / Public Routes (No Login Required)
 
@@ -37,5 +38,6 @@ router.get('/content/:slug', getStaticPage); // Static Pages (terms, privacy)
 // New Coupon Routes
 router.get('/coupons', getPublicCoupons);
 router.get('/coupons/:id', getCouponDetails);
+router.get('/invoices/shared/:token', getSharedInvoice);
 
 module.exports = router;
