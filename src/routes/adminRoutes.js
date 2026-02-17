@@ -6,7 +6,7 @@ const {
     createCampaign, getAllCampaigns, updateCampaignDetails, getCampaignAnalytics,
     getAllVendors, createVendorProfile,
     verifyBrand, verifyCampaign,
-    getSystemStats, getAllUsers, updateUserStatus,
+    getSystemStats, getAllUsers, getUserOverview, updateUserDetails, updateUserStatus,
     getAllTransactions, getAllQRs, getQrBatch,
     verifyVendor, creditWallet, adjustWalletBalance, updateCampaignStatus, getVendorDetails,
     getVendorOverview, updateVendorDetails, updateVendorCredentials, getVendorCredentialRequests,
@@ -84,6 +84,8 @@ router.post('/wallets/adjust', adjustWalletBalance);
 
 // User Management
 router.get('/users', getAllUsers);
+router.get('/users/:id/overview', getUserOverview);
+router.put('/users/:id', updateUserDetails);
 router.put('/users/:id/status', updateUserStatus);
 
 // System Audit

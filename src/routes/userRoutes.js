@@ -4,7 +4,7 @@ const {
     getDashboard, getRedemptionHistory, getTransactionHistory, updateUserProfile,
     getAvailableOffers, createSupportTicket, getSupportTickets,
     getNotifications, markNotificationRead,
-    uploadAvatar, changePassword, deleteAccount, getHomeStats
+    uploadAvatar, changePassword, deleteAccount, getHomeStats, redeemStoreProduct
 } = require('../controllers/userController');
 const {
     requestWithdrawal,
@@ -41,6 +41,7 @@ router.get('/support', protect, getSupportTickets); // History
 
 router.get('/notifications', protect, getNotifications);
 router.put('/notifications/:id/read', protect, markNotificationRead);
+router.post('/store/redeem', protect, redeemStoreProduct);
 
 // Explorer - Use /api/public/...
 // router.get('/home', protect, getHomeData); 

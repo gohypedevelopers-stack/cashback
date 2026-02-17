@@ -19,6 +19,67 @@ const normalizeProduct = (product) => {
     };
 };
 
+const DEFAULT_REDEEM_PRODUCT_CATEGORY = 'Popular';
+const REDEEM_PRODUCT_STATUSES = new Set(['active', 'inactive']);
+
+const normalizeCatalogText = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const sanitizeStoreTab = (tab) => {
+    const id = normalizeCatalogText(tab?.id).toLowerCase();
+    const label = normalizeCatalogText(tab?.label);
+    if (!id || !label) return null;
+    return { id, label };
+};
+
+const sanitizeStoreProduct = (item, index) => {
+    const name = normalizeCatalogText(item?.name);
+    if (!name) return null;
+
+    const amountValue = Number(item?.amount ?? item?.points);
+    const amount = Number.isFinite(amountValue) && amountValue >= 0 ? amountValue : 0;
+    const category = normalizeCatalogText(item?.category) || DEFAULT_REDEEM_PRODUCT_CATEGORY;
+    const statusRaw = normalizeCatalogText(item?.status).toLowerCase();
+    const status = REDEEM_PRODUCT_STATUSES.has(statusRaw) ? statusRaw : 'active';
+    const id =
+        normalizeCatalogText(item?.id) ||
+        normalizeCatalogText(item?.sku) ||
+        `redeem-product-${index + 1}`;
+    const image =
+        normalizeCatalogText(item?.image) ||
+        normalizeCatalogText(item?.imageUrl);
+
+    return {
+        id,
+        name,
+        amount,
+        points: amount,
+        category,
+        description: normalizeCatalogText(item?.description),
+        image: image || '',
+        value: normalizeCatalogText(item?.value),
+        brand: normalizeCatalogText(item?.brand),
+        stock: Number.isFinite(Number(item?.stock))
+            ? Math.max(0, Math.floor(Number(item.stock)))
+            : null,
+        status
+    };
+};
+
+const normalizeCategoryList = (categories) => {
+    if (!Array.isArray(categories)) return [];
+    const deduped = [];
+    const seen = new Set();
+    categories.forEach((raw) => {
+        const value = normalizeCatalogText(raw);
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        deduped.push(value);
+    });
+    return deduped;
+};
+
 const getCampaignCashbackRange = (campaign, productId) => {
     if (!campaign) return null;
     const amounts = [];
@@ -52,17 +113,29 @@ const getCampaignRewardLabel = (campaign, productId) => {
 // --- Home Data (Universal) ---
 exports.getHomeData = async (req, res) => {
     try {
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+        const rawBanners = settings?.metadata?.homeBanners;
+        const banners = Array.isArray(rawBanners)
+            ? rawBanners
+                .map((banner, index) => ({
+                    id: banner?.id || banner?.key || banner?.slug || index + 1,
+                    title: banner?.title || banner?.heading || '',
+                    subtitle: banner?.subtitle || banner?.subTitle || banner?.caption || '',
+                    img: banner?.img || banner?.imageUrl || banner?.image || banner?.bannerImage || '',
+                    accent: banner?.accent || banner?.gradient || '',
+                    link: banner?.link || banner?.ctaLink || ''
+                }))
+                .filter((banner) => banner.title || banner.subtitle || banner.img)
+            : [];
+
         const brands = await prisma.brand.findMany({
             where: { status: 'active' },
             take: 6,
             select: { id: true, name: true, logoUrl: true }
         });
-
-        // Mock Banners (Move to DB if needed later)
-        const banners = [
-            { id: 1, title: "Get Upto â‚¹15000 on Scanning Products", subtitle: "From Double Tiger Tea", bg: "bg-teal-900", img: "/placeholder.svg" },
-            { id: 2, title: "Win Gold Coins Daily", subtitle: "Scan Heritage Milk Packs", bg: "bg-blue-900", img: "/placeholder.svg" }
-        ];
 
         // Featured Products
         const featuredProductsRaw = await prisma.product.findMany({
@@ -268,61 +341,6 @@ exports.getProductDetails = async (req, res) => {
     }
 };
 
-// --- Brand Inquiry (Public) ---
-exports.createBrandInquiry = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name, email, phone, message } = req.body || {};
-        const trimmedMessage = typeof message === 'string' ? message.trim() : '';
-
-        if (!trimmedMessage) {
-            return res.status(400).json({ message: 'Message is required' });
-        }
-
-        const brand = await prisma.brand.findUnique({
-            where: { id },
-            include: {
-                Vendor: { select: { id: true, userId: true, businessName: true } }
-            }
-        });
-
-        if (!brand) {
-            return res.status(404).json({ message: 'Brand not found' });
-        }
-
-        if (!brand.Vendor?.userId) {
-            return res.status(404).json({ message: 'Brand does not have a vendor assigned' });
-        }
-
-        const customerName = typeof name === 'string' ? name.trim() : '';
-        const customerEmail = typeof email === 'string' ? email.trim() : '';
-        const customerPhone = typeof phone === 'string' ? phone.trim() : '';
-
-        await prisma.notification.create({
-            data: {
-                userId: brand.Vendor.userId,
-                title: `New customer query${brand.name ? ` - ${brand.name}` : ''}`,
-                message: trimmedMessage,
-                type: 'brand-inquiry',
-                metadata: {
-                    tab: 'support',
-                    brandId: brand.id,
-                    brandName: brand.name,
-                    customerName: customerName || null,
-                    customerEmail: customerEmail || null,
-                    customerPhone: customerPhone || null
-                }
-            }
-        });
-
-        res.status(201).json({ message: 'Your query has been sent to the brand.' });
-    } catch (error) {
-        console.error('[BrandInquiry] Error:', error);
-        res.status(500).json({ message: 'Failed to send query', error: error.message });
-    }
-};
-
-
 exports.getGiftCardCategories = (_req, res) => {
     res.json(giftCardCategories);
 };
@@ -354,13 +372,56 @@ exports.getGiftCardDetails = (req, res) => {
     res.json(card);
 };
 
-exports.getStoreData = (_req, res) => {
-    res.json({
-        tabs: storeTabs,
-        categories: storeCategories,
-        vouchers,
-        products: storeProducts
-    });
+exports.getStoreData = async (_req, res) => {
+    try {
+        const settings = await prisma.systemSettings.findUnique({
+            where: { id: 'default' },
+            select: { metadata: true }
+        });
+        const metadata =
+            settings?.metadata && typeof settings.metadata === 'object'
+                ? settings.metadata
+                : {};
+        const redeemStore =
+            metadata?.redeemStore && typeof metadata.redeemStore === 'object'
+                ? metadata.redeemStore
+                : {};
+
+        const configuredTabs = Array.isArray(redeemStore.tabs)
+            ? redeemStore.tabs.map(sanitizeStoreTab).filter(Boolean)
+            : [];
+
+        const configuredProducts = Array.isArray(redeemStore.products)
+            ? redeemStore.products
+                .map((item, index) => sanitizeStoreProduct(item, index))
+                .filter(Boolean)
+                .filter((product) => product.status !== 'inactive')
+            : [];
+
+        const products = configuredProducts.length ? configuredProducts : storeProducts;
+        const categoriesFromProducts = products
+            .map((product) => normalizeCatalogText(product?.category))
+            .filter(Boolean);
+        const categoriesFromVouchers = vouchers
+            .map((voucher) => normalizeCatalogText(voucher?.category))
+            .filter(Boolean);
+        const configuredCategories = normalizeCategoryList(redeemStore.categories);
+        const mergedCategories = normalizeCategoryList([
+            ...(configuredCategories.length ? configuredCategories : []),
+            ...storeCategories,
+            ...categoriesFromVouchers,
+            ...categoriesFromProducts
+        ]);
+
+        res.json({
+            tabs: configuredTabs.length ? configuredTabs : storeTabs,
+            categories: mergedCategories.length ? mergedCategories : storeCategories,
+            vouchers,
+            products
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Error loading store data', error: error.message });
+    }
 };
 
 exports.getFAQs = async (req, res) => {
