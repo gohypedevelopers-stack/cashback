@@ -52,6 +52,28 @@ exports.register = async (req, res) => {
     }
 };
 
+exports.checkUsername = async (req, res) => {
+    const { username } = req.body;
+
+    if (!username) {
+        return res.status(400).json({ message: 'Username is required' });
+    }
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { username: username.trim() }
+        });
+
+        if (user) {
+            return res.json({ available: false, message: 'Username is already taken' });
+        }
+
+        res.json({ available: true, message: 'Username is available' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error checking username', error: error.message });
+    }
+};
+
 exports.login = async (req, res) => {
     const { email, password, username, emailOrUsername } = req.body;
 

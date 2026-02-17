@@ -11,11 +11,13 @@ const {
     forgotPassword,
     resetPassword,
     setPassword,
-    registerVendor
+    registerVendor,
+    checkUsername
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
 router.post('/register', register);
+router.post('/check-username', checkUsername);
 router.post('/login', login);
 router.get('/me', protect, getMe);
 

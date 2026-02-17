@@ -37,8 +37,13 @@ model Vendor {
   userId            String              @unique
   businessName      String
   contactPhone      String?
+  alternatePhone    String?
+  designation       String?
   gstin             String?
   address           String?
+  city              String?
+  state             String?
+  pincode           String?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   rejectionReason   String?

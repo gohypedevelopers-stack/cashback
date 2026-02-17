@@ -690,7 +690,7 @@ exports.upsertVendorBrand = async (req, res) => {
 
 exports.updateVendorProfile = async (req, res) => {
     try {
-        const { businessName, contactPhone, contactEmail, gstin, address } = req.body;
+        const { businessName, contactPhone, alternatePhone, designation, contactEmail, gstin, address, city, state, pincode } = req.body;
 
         // Ensure Vendor Exists (or Create it)
         let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -701,9 +701,14 @@ exports.updateVendorProfile = async (req, res) => {
                     userId: req.user.id,
                     businessName: businessName || 'My Company',
                     contactPhone,
+                    alternatePhone,
+                    designation,
                     contactEmail,
                     gstin,
                     address,
+                    city,
+                    state,
+                    pincode,
                     status: 'active'
                 }
             });
@@ -713,9 +718,14 @@ exports.updateVendorProfile = async (req, res) => {
                 data: {
                     businessName,
                     contactPhone,
+                    alternatePhone,
+                    designation,
                     contactEmail,
                     gstin,
-                    address
+                    address,
+                    city,
+                    state,
+                    pincode
                 }
             });
         }
@@ -728,9 +738,14 @@ exports.updateVendorProfile = async (req, res) => {
             metadata: {
                 businessName,
                 contactPhone,
+                alternatePhone,
+                designation,
                 contactEmail,
                 gstin,
-                address
+                address,
+                city,
+                state,
+                pincode
             },
             req
         });
