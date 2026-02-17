@@ -22,6 +22,40 @@ const getClaimStatus = (claim, now = new Date()) => {
   return 'unclaimed';
 };
 
+const toCoordinate = (value, min, max) => {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < min || numeric > max) return null;
+  return Number(numeric.toFixed(7));
+};
+
+const toAccuracy = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100000) return null;
+  return Number(numeric.toFixed(2));
+};
+
+const normalizeText = (value, max = 80) => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, max);
+};
+
+const parseLocationPayload = (payload = {}) => {
+  const source = payload.location && typeof payload.location === 'object' ? payload.location : payload;
+  return {
+    lat: toCoordinate(source.lat, -90, 90),
+    lng: toCoordinate(source.lng, -180, 180),
+    accuracyMeters: toAccuracy(source.accuracyMeters ?? source.accuracy),
+    city: normalizeText(source.city),
+    state: normalizeText(source.state),
+    pincode: normalizeText(source.pincode, 20),
+    capturedAt: new Date()
+  };
+};
+
 const ensureWallet = async (tx, userId) => {
   let wallet = await tx.wallet.findUnique({ where: { userId } });
   if (!wallet) {
@@ -121,6 +155,7 @@ exports.redeemClaim = async (req, res) => {
   try {
     const userId = req.user.id;
     const token = String(req.body?.token || '').trim();
+    const location = parseLocationPayload(req.body || {});
     if (!token) {
       return res.status(400).json({ message: 'Claim token is required' });
     }
@@ -193,6 +228,21 @@ exports.redeemClaim = async (req, res) => {
           status: 'success',
           description: 'QR claim reward',
           referenceId: token
+        }
+      });
+
+      await tx.redemptionEvent.create({
+        data: {
+          userId,
+          amount: claim.amount,
+          type: 'redeem_success',
+          lat: location.lat,
+          lng: location.lng,
+          accuracyMeters: location.accuracyMeters,
+          city: location.city,
+          state: location.state,
+          pincode: location.pincode,
+          capturedAt: location.capturedAt
         }
       });
 

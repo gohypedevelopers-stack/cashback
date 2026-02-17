@@ -5,10 +5,15 @@ const {
     getWalletBalance,
     rechargeWallet,
     orderQRs,
+    rechargeQrInventory,
+    getVendorQrInventorySeries,
+    importVendorQrInventorySeries,
     getMyQRs,
     deleteQrBatch,
     getDashboardStats,
     getVendorTransactions,
+    getVendorWalletTransactionsDetailed,
+    exportVendorWalletTransactions,
     getVendorCampaigns,
     getVendorProfile,
     updateVendorProfile,
@@ -36,8 +41,18 @@ const {
     downloadOrderQrPdf,
     downloadCampaignQrPdf,
     getVendorRedemptions,
+    exportVendorRedemptions,
+    getVendorRedemptionsMap,
+    getVendorSummaryAnalytics,
+    getVendorCustomers,
+    exportVendorCustomers,
+    getVendorInvoices,
+    downloadVendorInvoicePdf,
+    shareVendorInvoice,
     createVendorSupportTicket,
-    getVendorSupportTickets
+    getVendorSupportTickets,
+    getVendorProductReports,
+    downloadVendorProductReport
 } = require('../controllers/vendorController');
 
 router.use(protect);
@@ -48,6 +63,8 @@ router.use(authorize('vendor'));
 // Wallet
 router.get('/wallet', getWalletBalance);
 router.post('/wallet/recharge', rechargeWallet);
+router.get('/wallet/transactions', getVendorWalletTransactionsDetailed);
+router.get('/wallet/transactions/export', exportVendorWalletTransactions);
 
 // Vendor Profile
 router.get('/profile', getVendorProfile);
@@ -75,6 +92,9 @@ const restrictedRouter = express.Router();
 
 // QR Codes
 restrictedRouter.post('/qrs/order', orderQRs);
+restrictedRouter.post('/qrs/recharge', rechargeQrInventory);
+restrictedRouter.get('/qrs/inventory/series', getVendorQrInventorySeries);
+restrictedRouter.post('/qrs/inventory/import', importVendorQrInventorySeries);
 restrictedRouter.get('/qrs', getMyQRs);
 restrictedRouter.delete('/qrs/batch', deleteQrBatch);
 
@@ -86,6 +106,11 @@ restrictedRouter.get('/orders/:orderId/download', downloadOrderQrPdf);
 
 // Redemptions (B11 - Customer Data)
 restrictedRouter.get('/redemptions', getVendorRedemptions);
+restrictedRouter.get('/redemptions/export', exportVendorRedemptions);
+restrictedRouter.get('/redemptions/map', getVendorRedemptionsMap);
+restrictedRouter.get('/analytics/summary', getVendorSummaryAnalytics);
+restrictedRouter.get('/customers', getVendorCustomers);
+restrictedRouter.get('/customers/export', exportVendorCustomers);
 
 // Campaign Management
 restrictedRouter.get('/campaigns', getVendorCampaigns);
@@ -103,6 +128,13 @@ restrictedRouter.post('/products/import', importProducts);
 restrictedRouter.get('/products', getVendorProducts);
 restrictedRouter.put('/products/:id', updateProduct);
 restrictedRouter.delete('/products/:id', deleteProduct);
+restrictedRouter.get('/product-reports', getVendorProductReports);
+restrictedRouter.get('/product-reports/:id/download', downloadVendorProductReport);
+
+// Billing
+restrictedRouter.get('/invoices', getVendorInvoices);
+restrictedRouter.get('/invoices/:id/pdf', downloadVendorInvoicePdf);
+restrictedRouter.post('/invoices/:id/share', shareVendorInvoice);
 
 // Mount Restricted Router
 router.use('/', restrictedRouter);
