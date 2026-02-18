@@ -39,6 +39,7 @@ const {
     payOrder,
     payCampaign,
     downloadOrderQrPdf,
+    downloadVendorInventoryQrPdf,
     downloadCampaignQrPdf,
     getVendorRedemptions,
     exportVendorRedemptions,
@@ -95,6 +96,7 @@ restrictedRouter.post('/qrs/order', orderQRs);
 restrictedRouter.post('/qrs/recharge', rechargeQrInventory);
 restrictedRouter.get('/qrs/inventory/series', getVendorQrInventorySeries);
 restrictedRouter.post('/qrs/inventory/import', importVendorQrInventorySeries);
+restrictedRouter.get('/qrs/inventory/download', downloadVendorInventoryQrPdf);
 restrictedRouter.get('/qrs', getMyQRs);
 restrictedRouter.delete('/qrs/batch', deleteQrBatch);
 
