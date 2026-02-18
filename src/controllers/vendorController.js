@@ -19,7 +19,16 @@ const {
 } = require('../services/qrInventoryService');
 const { createInvoice, renderInvoiceToBuffer, withShareToken } = require('../services/invoiceService');
 
-const DEFAULT_VENDOR_QR_INVENTORY = Number(process.env.DEFAULT_VENDOR_QR_INVENTORY || 1000);
+const DEFAULT_VENDOR_QR_INVENTORY = Number(process.env.DEFAULT_VENDOR_QR_INVENTORY || 0);
+const AUTO_SEED_VENDOR_QR_INVENTORY =
+    String(process.env.AUTO_SEED_VENDOR_QR_INVENTORY || 'false').toLowerCase() === 'true';
+const DEFAULT_VENDOR_QR_SERIES_CODES = String(
+    process.env.DEFAULT_VENDOR_QR_SERIES_CODES || 'A,B,C,D,E,F,G,H,I,J'
+)
+    .split(',')
+    .map((code) => code.trim())
+    .filter(Boolean);
+const DEFAULT_VENDOR_QR_SERIES_SIZE = Number(process.env.DEFAULT_VENDOR_QR_SERIES_SIZE || 100);
 const INVOICE_GST_RATE = Number(process.env.INVOICE_GST_RATE || 0.18);
 const LEGACY_BILLABLE_CATEGORIES = [
     'campaign_payment',
@@ -225,7 +234,13 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
 
     if (vendor.status === 'active') {
         await backfillLegacyLockedBudgets(tx, vendor.id);
-        await seedVendorInventory(tx, vendor.id, DEFAULT_VENDOR_QR_INVENTORY);
+        if (AUTO_SEED_VENDOR_QR_INVENTORY && DEFAULT_VENDOR_QR_INVENTORY > 0) {
+            await seedVendorInventory(tx, vendor.id, DEFAULT_VENDOR_QR_INVENTORY, {
+                seriesCodes: DEFAULT_VENDOR_QR_SERIES_CODES,
+                perSeriesCount: DEFAULT_VENDOR_QR_SERIES_SIZE,
+                sourceBatch: 'AUTO_SERIES_SEED'
+            });
+        }
     }
 
     const refreshedWallet = await tx.wallet.findUnique({ where: { id: wallet.id } });
@@ -1185,7 +1200,23 @@ exports.upsertVendorBrand = async (req, res) => {
 
 exports.updateVendorProfile = async (req, res) => {
     try {
-        const { businessName, contactPhone, alternatePhone, designation, contactEmail, gstin, address, city, state, pincode } = req.body;
+        const {
+            businessName,
+            contactPhone,
+            alternatePhone,
+            designation,
+            contactEmail,
+            gstin,
+            address,
+            city,
+            state,
+            pincode
+        } = req.body || {};
+
+        const normalizedAddress = [address, city, state, pincode]
+            .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
+            .filter(Boolean)
+            .join(', ');
 
         // Ensure Vendor Exists (or Create it)
         let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
@@ -1196,14 +1227,9 @@ exports.updateVendorProfile = async (req, res) => {
                     userId: req.user.id,
                     businessName: businessName || 'My Company',
                     contactPhone,
-                    alternatePhone,
-                    designation,
-                    contactEmail,
+                    contactEmail: contactEmail || null,
                     gstin,
-                    address,
-                    city,
-                    state,
-                    pincode,
+                    address: normalizedAddress || null,
                     status: 'active'
                 }
             });
@@ -1213,14 +1239,9 @@ exports.updateVendorProfile = async (req, res) => {
                 data: {
                     businessName,
                     contactPhone,
-                    alternatePhone,
-                    designation,
-                    contactEmail,
+                    contactEmail: contactEmail || null,
                     gstin,
-                    address,
-                    city,
-                    state,
-                    pincode
+                    address: normalizedAddress || null
                 }
             });
         }
@@ -1463,7 +1484,7 @@ exports.requestCampaign = async (req, res) => {
                 totalBudget: normalizedTotalBudget,
                 subtotal: normalizedSubtotal,
                 allocations,
-                status: 'pending'
+                status: 'active'
             }
         });
         safeLogVendorActivity({
@@ -1484,7 +1505,7 @@ exports.requestCampaign = async (req, res) => {
         await createVendorNotification({
             vendorId: brand.vendorId,
             title: 'Campaign created',
-            message: `Campaign "${title}" created and pending activation.`,
+            message: `Campaign "${title}" created and ready for QR funding.`,
             type: 'campaign-created',
             metadata: { tab: 'campaigns', campaignId: campaign.id, brandId }
         });
@@ -2723,17 +2744,92 @@ exports.downloadOrderQrPdf = async (req, res) => {
     }
 };
 
-// Download QR PDF for a campaign (all QRs)
+exports.downloadVendorInventoryQrPdf = async (req, res) => {
+    try {
+        const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
+        if (!vendor) {
+            return res.status(404).json({ message: 'Vendor profile not found' });
+        }
+
+        const requestedSeries = normalizeSeriesCode(req.query?.seriesCode, null);
+        const parsedLimit = Number.parseInt(req.query?.limit, 10);
+        const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+            ? Math.min(parsedLimit, 5000)
+            : 2000;
+
+        const where = {
+            vendorId: vendor.id,
+            status: 'inventory'
+        };
+        if (requestedSeries) {
+            where.seriesCode = requestedSeries;
+        }
+
+        const qrCodes = await prisma.qRCode.findMany({
+            where,
+            orderBy: [
+                { seriesCode: 'asc' },
+                { seriesOrder: 'asc' },
+                { createdAt: 'asc' }
+            ],
+            take: safeLimit,
+            select: {
+                uniqueHash: true,
+                cashbackAmount: true
+            }
+        });
+
+        if (!qrCodes.length) {
+            return res.status(404).json({
+                message: requestedSeries
+                    ? `No inventory QR codes available for series "${requestedSeries}".`
+                    : 'No inventory QR codes available for download.'
+            });
+        }
+
+        const sheetLabel = requestedSeries
+            ? `Prebuilt Inventory (${requestedSeries})`
+            : 'Prebuilt Inventory (All Series)';
+
+        const pdfBuffer = await generateQrPdf({
+            qrCodes,
+            campaignTitle: sheetLabel,
+            orderId: `inventory-${vendor.id.slice(-6)}`,
+            brandName: vendor.businessName || 'Vendor'
+        });
+
+        const fileSuffix = requestedSeries ? requestedSeries.replace(/[^a-z0-9_-]+/gi, '_') : 'all';
+        const fileName = `QR_Inventory_${fileSuffix}_${Date.now()}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.send(pdfBuffer);
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'inventory_qr_pdf_download',
+            entityType: 'qr',
+            metadata: {
+                seriesCode: requestedSeries,
+                qrCount: qrCodes.length
+            },
+            req
+        });
+    } catch (error) {
+        if (res.headersSent) return;
+        res.status(500).json({ message: 'Failed to generate inventory PDF', error: error.message });
+    }
+};
+
+// Download QR PDF for a campaign (already funded/redeemed QRs only)
 exports.downloadCampaignQrPdf = async (req, res) => {
     try {
         const { id: campaignId } = req.params;
-        console.log('[CampaignPDF] Starting download for campaign:', campaignId);
 
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) {
             return res.status(404).json({ message: 'Vendor profile not found' });
         }
-        console.log('[CampaignPDF] Vendor found:', vendor.id);
 
         // Get campaign and verify ownership
         const campaign = await prisma.campaign.findUnique({
@@ -2744,65 +2840,33 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         });
 
         if (!campaign) {
-            console.log('[CampaignPDF] Campaign not found');
             return res.status(404).json({ message: 'Campaign not found' });
         }
-        console.log('[CampaignPDF] Campaign found:', campaign.title, 'Status:', campaign.status);
 
         if (campaign.Brand.vendorId !== vendor.id) {
-            console.log('[CampaignPDF] Unauthorized - vendor mismatch');
             return res.status(403).json({ message: 'Unauthorized access to this campaign' });
         }
 
         if (campaign.status !== 'active') {
-            console.log('[CampaignPDF] Campaign not active:', campaign.status);
             return res.status(400).json({ message: 'PDF is only available for active campaigns' });
         }
 
-        // Get all QRs for this campaign
-        let qrCodes = await prisma.qRCode.findMany({
-            where: { campaignId },
+        const qrCodes = await prisma.qRCode.findMany({
+            where: {
+                campaignId,
+                status: {
+                    in: ['funded', 'redeemed', 'generated', 'active', 'assigned']
+                }
+            },
             select: { uniqueHash: true, cashbackAmount: true }
         });
-        console.log('[CampaignPDF] Found QR codes:', qrCodes.length);
 
-        if (!qrCodes || qrCodes.length === 0) {
-            console.log('[CampaignPDF] No QRs found. Auto-generating based on allocations...');
-            const allocations = campaign.allocations || [];
-            const allocArray = Array.isArray(allocations) ? allocations : [];
-            const newQrData = [];
-
-            for (const alloc of allocArray) {
-                const qty = parseInt(alloc.quantity) || 0;
-                const amt = parseFloat(alloc.cashbackAmount) || 0;
-                if (qty > 0 && amt > 0) {
-                    for (let i = 0; i < qty; i++) {
-                        newQrData.push({
-                            campaignId: campaign.id,
-                            vendorId: vendor.id,
-                            uniqueHash: generateQRHash(),
-                            cashbackAmount: amt,
-                            status: 'generated'
-                        });
-                    }
-                }
-            }
-
-            if (newQrData.length > 0) {
-                await prisma.qRCode.createMany({ data: newQrData });
-                console.log(`[CampaignPDF] Auto-generated ${newQrData.length} QRs.`);
-                // Fetch the newly created QRs
-                qrCodes = await prisma.qRCode.findMany({
-                    where: { campaignId },
-                    select: { uniqueHash: true, cashbackAmount: true }
-                });
-            } else {
-                return res.status(400).json({ message: 'No allocations found to generate QRs' });
-            }
+        if (!qrCodes.length) {
+            return res.status(400).json({
+                message: 'No funded QRs found for this campaign. Recharge inventory first, then download.'
+            });
         }
 
-        // Generate PDF
-        console.log('[CampaignPDF] Generating PDF...');
         const pdfBuffer = await generateQrPdf({
             qrCodes,
             campaignTitle: campaign.title,
@@ -2810,9 +2874,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             brandName: campaign.Brand.name,
             brandLogoUrl: campaign.Brand.logoUrl
         });
-        console.log('[CampaignPDF] PDF generated, size:', pdfBuffer.length);
 
-        // Send PDF
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="QR_Campaign_${campaignId.slice(-8)}.pdf"`);
         res.setHeader('Content-Length', pdfBuffer.length);
@@ -2844,7 +2906,6 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         }
 
     } catch (error) {
-        console.error('[CampaignPDF] Error:', error.message, error.stack);
         if (res.headersSent) return;
         res.status(500).json({ message: 'Failed to generate PDF', error: error.message });
     }

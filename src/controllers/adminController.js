@@ -36,6 +36,7 @@ const parseAmount = (value) => {
     return Number(numeric.toFixed(2));
 };
 
+const DEFAULT_VENDOR_QR_INVENTORY = Number(process.env.DEFAULT_VENDOR_QR_INVENTORY || 0);
 const MAX_QR_PRICE = 100;
 
 const parseQrPrice = (value) => {
@@ -842,7 +843,13 @@ exports.verifyVendor = async (req, res) => {
 
             if (normalizedStatus === 'active' && existingVendor.status !== 'active') {
                 await ensureVendorWallet(tx, updatedVendor.id);
-                inventorySeeded = await seedVendorInventory(tx, updatedVendor.id, 1000);
+                if (DEFAULT_VENDOR_QR_INVENTORY > 0) {
+                    inventorySeeded = await seedVendorInventory(
+                        tx,
+                        updatedVendor.id,
+                        DEFAULT_VENDOR_QR_INVENTORY
+                    );
+                }
             }
 
             return updatedVendor;

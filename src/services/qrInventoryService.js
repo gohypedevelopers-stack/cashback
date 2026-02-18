@@ -55,8 +55,73 @@ const createInChunks = async (tx, rows, chunkSize = 250) => {
     return created;
 };
 
-const seedVendorInventory = async (tx, vendorId, targetCount = 1000) => {
-    const seriesCode = DEFAULT_AUTO_SERIES;
+const normalizeSeriesCodes = (seriesCodes = []) => {
+    if (!Array.isArray(seriesCodes)) return [];
+    const values = seriesCodes
+        .map((value) => normalizeSeriesCode(value, null))
+        .filter(Boolean);
+    return Array.from(new Set(values));
+};
+
+const relabelLegacyAutoInventory = async (
+    tx,
+    vendorId,
+    normalizedSeriesCodes,
+    safePerSeriesCount
+) => {
+    if (!normalizedSeriesCodes.length || !safePerSeriesCount) return 0;
+
+    const alreadyStructuredCount = await tx.qRCode.count({
+        where: {
+            vendorId,
+            status: 'inventory',
+            seriesCode: { in: normalizedSeriesCodes }
+        }
+    });
+    if (alreadyStructuredCount > 0) return 0;
+
+    const expectedTotal = normalizedSeriesCodes.length * safePerSeriesCount;
+    const legacyRows = await tx.qRCode.findMany({
+        where: {
+            vendorId,
+            status: 'inventory',
+            OR: [{ seriesCode: DEFAULT_AUTO_SERIES }, { seriesCode: null }]
+        },
+        orderBy: [{ createdAt: 'asc' }],
+        take: expectedTotal,
+        select: { id: true }
+    });
+
+    if (legacyRows.length < expectedTotal) return 0;
+
+    const importedAt = new Date();
+    let cursor = 0;
+    for (const seriesCode of normalizedSeriesCodes) {
+        for (let order = 1; order <= safePerSeriesCount; order += 1) {
+            const row = legacyRows[cursor];
+            if (!row) break;
+            await tx.qRCode.update({
+                where: { id: row.id },
+                data: {
+                    seriesCode,
+                    seriesOrder: order,
+                    sourceBatch: 'AUTO_SERIES_REMAP',
+                    importedAt
+                }
+            });
+            cursor += 1;
+        }
+    }
+
+    return cursor;
+};
+
+const seedVendorInventory = async (
+    tx,
+    vendorId,
+    targetCount = 1000,
+    { seriesCodes = null, perSeriesCount = null, sourceBatch = 'AUTO_SEED' } = {}
+) => {
     const currentInventoryCount = await tx.qRCode.count({
         where: {
             vendorId,
@@ -64,23 +129,82 @@ const seedVendorInventory = async (tx, vendorId, targetCount = 1000) => {
         }
     });
 
-    if (currentInventoryCount >= targetCount) {
-        return { created: 0, total: currentInventoryCount };
+    // IMPORTANT:
+    // Seed only once for a vendor (initial inventory). Do not top up automatically
+    // after redemptions/funding, otherwise inventory becomes infinite.
+    const existingQrCount = await tx.qRCode.count({
+        where: { vendorId }
+    });
+
+    const normalizedSeriesCodes = normalizeSeriesCodes(seriesCodes || []);
+    const safePerSeriesCount = Number.parseInt(perSeriesCount, 10);
+
+    if (existingQrCount > 0) {
+        const remapped = await relabelLegacyAutoInventory(
+            tx,
+            vendorId,
+            normalizedSeriesCodes,
+            Number.isFinite(safePerSeriesCount) && safePerSeriesCount > 0
+                ? safePerSeriesCount
+                : 0
+        );
+        const total = await tx.qRCode.count({
+            where: {
+                vendorId,
+                status: 'inventory'
+            }
+        });
+        return { created: 0, total, seeded: false, remapped };
     }
 
-    const toCreate = targetCount - currentInventoryCount;
+    if (normalizedSeriesCodes.length > 0 && Number.isFinite(safePerSeriesCount) && safePerSeriesCount > 0) {
+        let created = 0;
+        for (const seriesCode of normalizedSeriesCodes) {
+            const rows = buildInventoryRows(vendorId, safePerSeriesCount, {
+                seriesCode,
+                startOrder: 1,
+                sourceBatch
+            });
+            created += await createInChunks(tx, rows);
+        }
+
+        const total = await tx.qRCode.count({
+            where: {
+                vendorId,
+                status: 'inventory'
+            }
+        });
+
+        return {
+            created,
+            total,
+            seeded: true,
+            series: normalizedSeriesCodes.map((seriesCode) => ({
+                seriesCode,
+                created: safePerSeriesCount
+            }))
+        };
+    }
+
+    const safeTargetCount = Number.isFinite(Number(targetCount))
+        ? Math.max(0, Number.parseInt(targetCount, 10))
+        : 0;
+    if (!safeTargetCount) {
+        return { created: 0, total: currentInventoryCount, seeded: false };
+    }
+
     const seriesOrderCursor = await tx.qRCode.aggregate({
         where: {
             vendorId,
-            seriesCode
+            seriesCode: DEFAULT_AUTO_SERIES
         },
         _max: { seriesOrder: true }
     });
     const startOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
-    const rows = buildInventoryRows(vendorId, toCreate, {
-        seriesCode,
+    const rows = buildInventoryRows(vendorId, safeTargetCount, {
+        seriesCode: DEFAULT_AUTO_SERIES,
         startOrder,
-        sourceBatch: 'AUTO_SEED'
+        sourceBatch
     });
     const created = await createInChunks(tx, rows);
 
@@ -90,7 +214,7 @@ const seedVendorInventory = async (tx, vendorId, targetCount = 1000) => {
             status: 'inventory'
         }
     });
-    return { created, total };
+    return { created, total, seeded: true };
 };
 
 const importInventorySeries = async (
