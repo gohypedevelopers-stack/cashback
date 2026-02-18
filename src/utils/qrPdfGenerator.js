@@ -13,6 +13,9 @@ const getQrBaseUrl = () => {
     return String(base).replace(/\/$/, '');
 };
 
+const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const QRS_PER_SHEET = 25;
+
 /**
  * Generate a PDF with QR codes for an order
  * @param {Object} options
@@ -21,9 +24,10 @@ const getQrBaseUrl = () => {
  * @param {string} options.orderId - Order ID
  * @param {string} [options.brandName] - Brand Name
  * @param {string} [options.brandLogoUrl] - Brand Logo URL
+ * @param {string} [options.planType] - 'prepaid' or 'postpaid'
  * @returns {Promise<Buffer>} PDF buffer
  */
-async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brandLogoUrl }) {
+async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brandLogoUrl, planType }) {
     return new Promise(async (resolve, reject) => {
         try {
             const doc = new PDFDocument({
@@ -47,110 +51,184 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                 }
             }
 
-            // --- Header Section ---
-            let yPos = 30;
+            const isPostpaid = planType === 'postpaid';
 
-            // 1. Platform Branding (Assured Rewards)
-            // Try to load local platform logo
-            // Assuming the backend is running from cashback/src/index.js, so up two dirs to root of backend, then... 
-            // wait, the 'public' folder found was in e:\webapp\public. Backend is in e:\webapp\cashback backend\cashback.
-            // If the backend doesn't have access to the frontend public folder easily, we might fallback to text or need a hardcoded path.
-            // Let's rely on text "Assured Rewards" primarily and try to load logo if possible, but path might be tricky across environments.
-            // For now, I'll use a bold text header for "Assured Rewards".
+            if (isPostpaid) {
+                // --- POSTPAID: 25 QRs per sheet, labeled Sheet A, Sheet B, etc. ---
+                const totalSheets = Math.ceil(qrCodes.length / QRS_PER_SHEET);
 
-            doc.fontSize(24).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', { align: 'center' }); // Emerald-500 color
-            doc.fillColor('black'); // Reset
-            yPos += 35;
+                for (let sheetIdx = 0; sheetIdx < totalSheets; sheetIdx++) {
+                    if (sheetIdx > 0) doc.addPage();
 
-            // 2. Brand Branding
-            if (brandLogoBuffer) {
-                const logoWidth = 60;
-                doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
-                yPos += 70;
-            } else if (brandName) {
-                doc.fontSize(18).font('Helvetica-Bold').text(brandName, { align: 'center' });
-                yPos += 25;
-            }
+                    const sheetLetter = sheetIdx < SHEET_LETTERS.length
+                        ? SHEET_LETTERS[sheetIdx]
+                        : `${sheetIdx + 1}`;
+                    const sheetQrs = qrCodes.slice(sheetIdx * QRS_PER_SHEET, (sheetIdx + 1) * QRS_PER_SHEET);
 
-            if (brandLogoBuffer && brandName) {
-                doc.fontSize(16).font('Helvetica-Bold').text(brandName, { align: 'center' });
-                yPos += 20;
-            }
+                    // --- Header ---
+                    let yPos = 20;
 
-            doc.fontSize(14).font('Helvetica-Bold').text('QR Code Sheet', 30, yPos, { width: doc.page.width - 60, align: 'center' });
-            yPos += 20;
+                    // Cashback amount on top-right
+                    const sheetCashback = Number(sheetQrs[0]?.cashbackAmount) || 0;
+                    if (sheetCashback > 0) {
+                        doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
+                        doc.text(`Rs. ${sheetCashback.toFixed(0)}`, doc.page.width - 130, yPos, { width: 100, align: 'right' });
+                        doc.fillColor('black');
+                    }
 
-            doc.fontSize(10).font('Helvetica').text(`Campaign: ${campaignTitle}`, { align: 'center' });
-            yPos += 15;
+                    doc.fontSize(20).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                    doc.fillColor('black');
+                    yPos += 28;
 
-            doc.text(`Order ID: ${orderId.slice(-8)}`, { align: 'center' });
-            yPos += 15;
+                    if (brandLogoBuffer) {
+                        const logoWidth = 50;
+                        doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
+                        yPos += 55;
+                    } else if (brandName) {
+                        doc.fontSize(16).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        yPos += 22;
+                    }
 
-            doc.text(`Total QR Codes: ${qrCodes.length}`, { align: 'center' });
-            yPos += 25; // Space before grid
+                    if (brandLogoBuffer && brandName) {
+                        doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        yPos += 18;
+                    }
 
-            // Grid settings
-            const startY = yPos;
-            const qrSize = 80;
-            const labelHeight = 35;
-            const cellWidth = 100;
-            const cellHeight = qrSize + labelHeight + 10;
-            const cols = 5;
-            const startX = 30;
-            const pageHeight = 780;
+                    doc.fontSize(14).font('Helvetica-Bold').text(`Sheet ${sheetLetter}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                    yPos += 18;
 
-            let currentX = startX;
-            let currentY = startY;
-            let col = 0;
+                    doc.fontSize(9).font('Helvetica').text(`Campaign: ${campaignTitle}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                    yPos += 13;
 
-            for (let i = 0; i < qrCodes.length; i++) {
-                const qr = qrCodes[i];
+                    doc.text(`Sheet ${sheetIdx + 1} of ${totalSheets}  |  ${sheetQrs.length} QR Codes`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                    yPos += 18;
 
-                // Check if we need a new page
-                if (currentY + cellHeight > pageHeight) {
-                    doc.addPage();
-                    currentY = 50;
-                    currentX = startX;
-                    col = 0;
+                    // --- Grid: 5 cols x 5 rows = 25 QRs per sheet ---
+                    const qrSize = 85;
+                    const labelHeight = 22;
+                    const cellWidth = (doc.page.width - 60) / 5;
+                    const cellHeight = qrSize + labelHeight + 6;
+                    const startX = 30;
+
+                    for (let i = 0; i < sheetQrs.length; i++) {
+                        const qr = sheetQrs[i];
+                        const col = i % 5;
+                        const row = Math.floor(i / 5);
+                        const currentX = startX + col * cellWidth;
+                        const currentY = yPos + row * cellHeight;
+
+                        const qrTarget = `${getQrBaseUrl()}/redeem/${qr.uniqueHash}`;
+                        const qrDataUrl = await QRCode.toDataURL(qrTarget, {
+                            width: qrSize,
+                            margin: 1,
+                            errorCorrectionLevel: 'M'
+                        });
+
+                        doc.image(qrDataUrl, currentX + (cellWidth - qrSize) / 2, currentY, {
+                            width: qrSize,
+                            height: qrSize
+                        });
+
+                        // Sheet-based ID label: A1, A2, ... A25, B1, B2, ...
+                        const qrLabel = `${sheetLetter}${i + 1}`;
+                        const labelY = currentY + qrSize + 2;
+                        doc.fontSize(9).font('Helvetica-Bold');
+                        doc.text(qrLabel, currentX, labelY, {
+                            width: cellWidth,
+                            align: 'center'
+                        });
+                    }
+                }
+            } else {
+                // --- PREPAID: Original layout (continuous grid with auto page-break) ---
+                let yPos = 30;
+
+                doc.fontSize(24).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', { align: 'center' });
+                doc.fillColor('black');
+                yPos += 35;
+
+                if (brandLogoBuffer) {
+                    const logoWidth = 60;
+                    doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
+                    yPos += 70;
+                } else if (brandName) {
+                    doc.fontSize(18).font('Helvetica-Bold').text(brandName, { align: 'center' });
+                    yPos += 25;
                 }
 
-                // Generate QR code as data URL
-                const qrTarget = `${getQrBaseUrl()}/redeem/${qr.uniqueHash}`;
-                const qrDataUrl = await QRCode.toDataURL(qrTarget, {
-                    width: qrSize,
-                    margin: 1,
-                    errorCorrectionLevel: 'M'
-                });
+                if (brandLogoBuffer && brandName) {
+                    doc.fontSize(16).font('Helvetica-Bold').text(brandName, { align: 'center' });
+                    yPos += 20;
+                }
 
-                // Draw QR code
-                doc.image(qrDataUrl, currentX + (cellWidth - qrSize) / 2, currentY, {
-                    width: qrSize,
-                    height: qrSize
-                });
+                doc.fontSize(14).font('Helvetica-Bold').text('QR Code Sheet', 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                yPos += 20;
 
-                // Draw label below QR
-                const labelY = currentY + qrSize + 2;
-                doc.fontSize(7).font('Helvetica');
-                doc.text(`#${qr.uniqueHash.slice(-6)}`, currentX, labelY, {
-                    width: cellWidth,
-                    align: 'center'
-                });
+                doc.fontSize(10).font('Helvetica').text(`Campaign: ${campaignTitle}`, { align: 'center' });
+                yPos += 15;
 
-                // Using 'Helvetica-Bold' which doesn't support '₹'. Changed to 'Rs. '
-                doc.fontSize(9).font('Helvetica-Bold');
-                doc.text(`Rs. ${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
-                    width: cellWidth,
-                    align: 'center'
-                });
+                doc.text(`Order ID: ${orderId.slice(-8)}`, { align: 'center' });
+                yPos += 15;
 
-                // Move to next cell
-                col++;
-                if (col >= cols) {
-                    col = 0;
-                    currentX = startX;
-                    currentY += cellHeight;
-                } else {
-                    currentX += cellWidth + 5;
+                doc.text(`Total QR Codes: ${qrCodes.length}`, { align: 'center' });
+                yPos += 25;
+
+                const startY = yPos;
+                const qrSize = 80;
+                const labelHeight = 35;
+                const cellWidth = 100;
+                const cellHeight = qrSize + labelHeight + 10;
+                const cols = 5;
+                const startX = 30;
+                const pageHeight = 780;
+
+                let currentX = startX;
+                let currentY = startY;
+                let col = 0;
+
+                for (let i = 0; i < qrCodes.length; i++) {
+                    const qr = qrCodes[i];
+
+                    if (currentY + cellHeight > pageHeight) {
+                        doc.addPage();
+                        currentY = 50;
+                        currentX = startX;
+                        col = 0;
+                    }
+
+                    const qrTarget = `${getQrBaseUrl()}/redeem/${qr.uniqueHash}`;
+                    const qrDataUrl = await QRCode.toDataURL(qrTarget, {
+                        width: qrSize,
+                        margin: 1,
+                        errorCorrectionLevel: 'M'
+                    });
+
+                    doc.image(qrDataUrl, currentX + (cellWidth - qrSize) / 2, currentY, {
+                        width: qrSize,
+                        height: qrSize
+                    });
+
+                    const labelY = currentY + qrSize + 2;
+                    doc.fontSize(7).font('Helvetica');
+                    doc.text(`#${qr.uniqueHash.slice(-6)}`, currentX, labelY, {
+                        width: cellWidth,
+                        align: 'center'
+                    });
+
+                    doc.fontSize(9).font('Helvetica-Bold');
+                    doc.text(`Rs. ${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
+                        width: cellWidth,
+                        align: 'center'
+                    });
+
+                    col++;
+                    if (col >= cols) {
+                        col = 0;
+                        currentX = startX;
+                        currentY += cellHeight;
+                    } else {
+                        currentX += cellWidth + 5;
+                    }
                 }
             }
 

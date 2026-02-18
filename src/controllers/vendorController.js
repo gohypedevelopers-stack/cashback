@@ -1082,11 +1082,54 @@ exports.getVendorCampaigns = async (req, res) => {
                 },
                 deletedAt: null
             },
-            include: { Brand: true },
+            include: { Brand: true, Product: true },
             orderBy: { createdAt: 'desc' }
         });
-        // console.log('Fetched Vendor Campaigns:', JSON.stringify(campaigns, null, 2));
-        res.json(campaigns);
+
+        // Enhance active postpaid campaigns with sheet info
+        const enhancedCampaigns = await Promise.all(campaigns.map(async (camp) => {
+            if (camp.planType === 'postpaid' && camp.status === 'active') {
+                const qrs = await prisma.qRCode.findMany({
+                    where: { 
+                        campaignId: camp.id, 
+                        status: { in: ['funded', 'generated', 'active', 'assigned'] } 
+                    },
+                    orderBy: { createdAt: 'asc' },
+                    select: { cashbackAmount: true }
+                });
+
+                const sheets = [];
+                const QRS_PER_SHEET = 25;
+                const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+                for (let i = 0; i < qrs.length; i += QRS_PER_SHEET) {
+                   const chunk = qrs.slice(i, i + QRS_PER_SHEET);
+                   const amount = Number(chunk[0]?.cashbackAmount || 0);
+                   const sheetIndex = i / QRS_PER_SHEET;
+                   const label = sheetIndex < SHEET_LETTERS.length 
+                        ? SHEET_LETTERS[sheetIndex] 
+                        : `${sheetIndex + 1}`;
+                   
+                   sheets.push({
+                        index: sheetIndex,
+                        label,
+                        count: chunk.length,
+                        amount
+                   });
+                }
+                const totalBudgetFromSheets = sheets.reduce((sum, s) => sum + (s.amount * s.count), 0);
+                return { 
+                    ...camp, 
+                    sheets,
+                    subtotal: totalBudgetFromSheets,
+                    totalBudget: totalBudgetFromSheets
+                };
+            }
+            return camp;
+        }));
+
+        // console.log('Fetched Vendor Campaigns:', JSON.stringify(enhancedCampaigns, null, 2));
+        res.json(enhancedCampaigns);
     } catch (error) {
         console.error('getVendorCampaigns Error:', error);
         res.status(500).json({ message: 'Error fetching campaigns', error: error.message });
@@ -1423,17 +1466,16 @@ exports.requestBrand = async (req, res) => {
 
 exports.requestCampaign = async (req, res) => {
     try {
-        const { brandId, productId, title, description, cashbackAmount, startDate, endDate, totalBudget, subtotal, allocations } = req.body;
+        const { brandId, productId, title, description, cashbackAmount, startDate, endDate, totalBudget, subtotal, allocations, planType, voucherType } = req.body;
         console.log('Requesting Campaign Creation:', JSON.stringify(req.body, null, 2));
+
+        const isPostpaid = planType === 'postpaid';
+        const validVoucherTypes = ['digital_voucher', 'printed_qr', 'none'];
+        const normalizedVoucherType = validVoucherTypes.includes(voucherType) ? voucherType : 'none';
 
         // Verify ownership/status of brand
         const brand = await prisma.brand.findUnique({ where: { id: brandId } });
         if (!brand) return res.status(404).json({ message: 'Brand not found' });
-
-        // Ensure brand is active (which it should be now)
-        // Optional: Check if brand belongs to vendor (if strict ownership is needed)
-        // const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
-        // if (brand.vendorId !== vendor.id) return res.status(403).json({ message: 'Unauthorized brand' });
 
         if (brand.status !== 'active') {
             return res.status(400).json({ message: 'Brand is not active' });
@@ -1453,24 +1495,37 @@ exports.requestCampaign = async (req, res) => {
         }
 
         const allocationRows = Array.isArray(allocations) ? allocations : [];
-        const derivedSubtotal = allocationRows.reduce((sum, alloc) => {
-            const quantity = parseInt(alloc?.quantity, 10) || 0;
-            const cashback = parseFloat(alloc?.cashbackAmount);
-            const rowTotal = parseFloat(alloc?.totalBudget);
-            if (Number.isFinite(rowTotal) && rowTotal >= 0) {
-                return sum + rowTotal;
-            }
-            if (Number.isFinite(cashback) && cashback > 0 && quantity > 0) {
-                return sum + cashback * quantity;
-            }
-            return sum;
-        }, 0);
-        const normalizedTotalBudget = Number.isFinite(parseFloat(totalBudget))
-            ? parseFloat(totalBudget)
-            : derivedSubtotal;
-        const normalizedSubtotal = Number.isFinite(parseFloat(subtotal))
-            ? parseFloat(subtotal)
-            : derivedSubtotal;
+
+        let normalizedTotalBudget = 0;
+        let normalizedSubtotal = 0;
+        let campaignStatus = 'active';
+
+        if (isPostpaid) {
+            // Postpaid: only quantity matters, no cashback amount or budget
+            campaignStatus = 'pending';
+            normalizedTotalBudget = 0;
+            normalizedSubtotal = 0;
+        } else {
+            // Prepaid: existing flow with budget calculations
+            const derivedSubtotal = allocationRows.reduce((sum, alloc) => {
+                const quantity = parseInt(alloc?.quantity, 10) || 0;
+                const cashback = parseFloat(alloc?.cashbackAmount);
+                const rowTotal = parseFloat(alloc?.totalBudget);
+                if (Number.isFinite(rowTotal) && rowTotal >= 0) {
+                    return sum + rowTotal;
+                }
+                if (Number.isFinite(cashback) && cashback > 0 && quantity > 0) {
+                    return sum + cashback * quantity;
+                }
+                return sum;
+            }, 0);
+            normalizedTotalBudget = Number.isFinite(parseFloat(totalBudget))
+                ? parseFloat(totalBudget)
+                : derivedSubtotal;
+            normalizedSubtotal = Number.isFinite(parseFloat(subtotal))
+                ? parseFloat(subtotal)
+                : derivedSubtotal;
+        }
 
         const campaign = await prisma.campaign.create({
             data: {
@@ -1478,13 +1533,15 @@ exports.requestCampaign = async (req, res) => {
                 productId: validProductId,
                 title,
                 description,
-                cashbackAmount,
+                planType: isPostpaid ? 'postpaid' : 'prepaid',
+                voucherType: normalizedVoucherType,
+                cashbackAmount: isPostpaid ? null : cashbackAmount,
                 startDate: new Date(startDate),
                 endDate: new Date(endDate),
                 totalBudget: normalizedTotalBudget,
                 subtotal: normalizedSubtotal,
                 allocations,
-                status: 'active'
+                status: campaignStatus
             }
         });
         safeLogVendorActivity({
@@ -1496,18 +1553,22 @@ exports.requestCampaign = async (req, res) => {
                 brandId,
                 productId: validProductId,
                 title,
+                planType: isPostpaid ? 'postpaid' : 'prepaid',
                 totalBudget: normalizedTotalBudget,
                 subtotal: normalizedSubtotal,
                 allocationsCount: allocationRows.length
             },
             req
         });
+        const notificationMessage = isPostpaid
+            ? `Postpaid campaign "${title}" created and sent for approval.`
+            : `Campaign "${title}" created and ready for QR funding.`;
         await createVendorNotification({
             vendorId: brand.vendorId,
             title: 'Campaign created',
-            message: `Campaign "${title}" created and ready for QR funding.`,
+            message: notificationMessage,
             type: 'campaign-created',
-            metadata: { tab: 'campaigns', campaignId: campaign.id, brandId }
+            metadata: { tab: 'campaigns', campaignId: campaign.id, brandId, planType: isPostpaid ? 'postpaid' : 'prepaid' }
         });
         res.status(201).json({ message: 'Campaign created successfully', campaign });
     } catch (error) {
@@ -1515,6 +1576,7 @@ exports.requestCampaign = async (req, res) => {
         res.status(500).json({ message: 'Request failed', error: error.message, stack: error.stack });
     }
 };
+
 
 exports.updateBrand = async (_req, res) => {
     res.status(403).json({
@@ -2488,12 +2550,14 @@ exports.payCampaign = async (req, res) => {
                 ? campaign.allocations
                 : [];
 
+            const isPostpaidCampaign = campaign.planType === 'postpaid';
+
             const normalizedRows = allocArray
                 .map((alloc) => ({
                     quantity: Number.parseInt(alloc?.quantity, 10) || 0,
-                    cashbackAmount: toPositiveAmount(alloc?.cashbackAmount)
+                    cashbackAmount: toPositiveAmount(alloc?.cashbackAmount) || 0
                 }))
-                .filter((row) => row.quantity > 0 && row.cashbackAmount);
+                .filter((row) => row.quantity > 0 && (isPostpaidCampaign || row.cashbackAmount > 0));
 
             if (!normalizedRows.length) {
                 const error = new Error('Campaign has no valid allocations to fund');
@@ -2513,7 +2577,15 @@ exports.payCampaign = async (req, res) => {
             const techFeeSubtotal = toNumber(totalQty * printCostPerQr, 0);
             const techFeeTax = toNumber(techFeeSubtotal * INVOICE_GST_RATE, 0);
             const techFeeTotal = toNumber(techFeeSubtotal + techFeeTax, 0);
-            const totalCost = toNumber(cashbackTotal + techFeeTotal, 0);
+
+            // Voucher type fee per QR
+            const VOUCHER_FEE_MAP = { digital_voucher: 0.20, printed_qr: 0.50, none: 0 };
+            const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[campaign.voucherType] || 0, 0);
+            const voucherFeeSubtotal = toNumber(totalQty * voucherFeePerQr, 0);
+            const voucherFeeTax = toNumber(voucherFeeSubtotal * INVOICE_GST_RATE, 0);
+            const voucherFeeTotal = toNumber(voucherFeeSubtotal + voucherFeeTax, 0);
+
+            const totalCost = toNumber(cashbackTotal + techFeeTotal + voucherFeeTotal, 0);
 
             const campaignBudget = await tx.campaignBudget.create({
                 data: {
@@ -2542,41 +2614,79 @@ exports.payCampaign = async (req, res) => {
                 }
             });
 
-            const depositInvoice = await createFinanceInvoice(tx, {
-                vendorId: vendor.id,
-                brandId: campaign.Brand?.id,
-                campaignBudgetId: campaignBudget.id,
-                type: 'DEPOSIT_RECEIPT',
-                subtotal: cashbackTotal,
-                tax: 0,
-                label: `Cashback locked for campaign ${campaign.title}`,
-                metadata: {
-                    campaignId: campaign.id,
-                    quantity: totalQty
-                }
-            });
+            // Charge tech fee if applicable
+            if (techFeeTotal > 0) {
+                await chargeFee(tx, vendor.id, techFeeTotal, {
+                    referenceId: campaign.id,
+                    campaignBudgetId: campaignBudget.id,
+                    invoiceId: feeInvoice.id,
+                    description: `Technology fee for campaign ${campaign.title}`,
+                    metadata: {
+                        campaignId: campaign.id,
+                        quantity: totalQty
+                    }
+                });
+            }
 
-            await chargeFee(tx, vendor.id, techFeeTotal, {
-                referenceId: campaign.id,
-                campaignBudgetId: campaignBudget.id,
-                invoiceId: feeInvoice.id,
-                description: `Technology fee for campaign ${campaign.title}`,
-                metadata: {
-                    campaignId: campaign.id,
-                    quantity: totalQty
-                }
-            });
+            // Only create deposit invoice and lock funds if there's cashback to lock (skip for postpaid)
+            if (cashbackTotal > 0) {
+                const depositInvoice = await createFinanceInvoice(tx, {
+                    vendorId: vendor.id,
+                    brandId: campaign.Brand?.id,
+                    campaignBudgetId: campaignBudget.id,
+                    type: 'DEPOSIT_RECEIPT',
+                    subtotal: cashbackTotal,
+                    tax: 0,
+                    label: `Cashback locked for campaign ${campaign.title}`,
+                    metadata: {
+                        campaignId: campaign.id,
+                        quantity: totalQty
+                    }
+                });
 
-            await lock(tx, vendor.id, cashbackTotal, {
-                referenceId: campaign.id,
-                campaignBudgetId: campaignBudget.id,
-                invoiceId: depositInvoice.id,
-                description: `Cashback locked for campaign ${campaign.title}`,
-                metadata: {
-                    campaignId: campaign.id,
-                    quantity: totalQty
-                }
-            });
+                await lock(tx, vendor.id, cashbackTotal, {
+                    referenceId: campaign.id,
+                    campaignBudgetId: campaignBudget.id,
+                    invoiceId: depositInvoice.id,
+                    description: `Cashback locked for campaign ${campaign.title}`,
+                    metadata: {
+                        campaignId: campaign.id,
+                        quantity: totalQty
+                    }
+                });
+            }
+
+            // Charge voucher fee if applicable
+            if (voucherFeeTotal > 0) {
+                const voucherInvoice = await createFinanceInvoice(tx, {
+                    vendorId: vendor.id,
+                    brandId: campaign.Brand?.id,
+                    campaignBudgetId: campaignBudget.id,
+                    type: 'FEE_TAX_INVOICE',
+                    subtotal: voucherFeeSubtotal,
+                    tax: voucherFeeTax,
+                    label: `Voucher fee (${campaign.voucherType}) for campaign ${campaign.title}`,
+                    metadata: {
+                        campaignId: campaign.id,
+                        quantity: totalQty,
+                        feePerQr: voucherFeePerQr,
+                        voucherType: campaign.voucherType
+                    }
+                });
+
+                await chargeFee(tx, vendor.id, voucherFeeTotal, {
+                    referenceId: campaign.id,
+                    campaignBudgetId: campaignBudget.id,
+                    invoiceId: voucherInvoice.id,
+                    category: 'voucher_fee_charge',
+                    description: `Voucher fee (${campaign.voucherType}) for campaign ${campaign.title}`,
+                    metadata: {
+                        campaignId: campaign.id,
+                        quantity: totalQty,
+                        voucherType: campaign.voucherType
+                    }
+                });
+            }
 
             let fundedCount = 0;
             for (const row of normalizedRows) {
@@ -2604,6 +2714,7 @@ exports.payCampaign = async (req, res) => {
                 totalCost,
                 totalQty,
                 printCost: techFeeTotal,
+                voucherCost: voucherFeeTotal,
                 baseBudget: cashbackTotal,
                 fundedCount,
                 selectedSeries: requestedSeries
@@ -2821,6 +2932,293 @@ exports.downloadVendorInventoryQrPdf = async (req, res) => {
     }
 };
 
+// Assign cashback amount to QRs by sheet (A=0-24, B=25-49, etc.) for postpaid campaigns
+exports.assignSheetCashback = async (req, res) => {
+    try {
+        const { id: campaignId } = req.params;
+        const { sheetIndex, cashbackAmount } = req.body;
+
+        const parsedSheet = Number.parseInt(sheetIndex, 10);
+        const parsedAmount = Number.parseFloat(cashbackAmount);
+
+        if (!Number.isFinite(parsedSheet) || parsedSheet < 0) {
+            return res.status(400).json({ message: 'Invalid sheet index' });
+        }
+        if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+            return res.status(400).json({ message: 'Invalid cashback amount' });
+        }
+
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: { Brand: { select: { vendorId: true } } }
+        });
+
+        if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+
+        if (campaign.planType !== 'postpaid') {
+            return res.status(400).json({ message: 'Sheet cashback assignment is only available for postpaid campaigns' });
+        }
+
+        // Get all campaign QRs ordered by creation to determine sheet position
+        const allQrs = await prisma.qRCode.findMany({
+            where: {
+                campaignId,
+                status: { in: ['funded', 'generated', 'active', 'assigned'] }
+            },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true }
+        });
+
+        const QRS_PER_SHEET = 25;
+        const start = parsedSheet * QRS_PER_SHEET;
+        const end = start + QRS_PER_SHEET;
+        const sheetQrIds = allQrs.slice(start, end).map(qr => qr.id);
+
+        if (!sheetQrIds.length) {
+            return res.status(400).json({ message: 'No QR codes found for this sheet' });
+        }
+
+        const updated = await prisma.qRCode.updateMany({
+            where: { id: { in: sheetQrIds } },
+            data: { cashbackAmount: parsedAmount }
+        });
+
+        // Recalculate campaign total budget based on ALL QRs
+        const aggregate = await prisma.qRCode.aggregate({
+            where: { campaignId },
+            _sum: { cashbackAmount: true }
+        });
+        const totalCashback = aggregate._sum.cashbackAmount || 0;
+
+        await prisma.campaign.update({
+            where: { id: campaignId },
+            data: {
+                subtotal: totalCashback,
+                totalBudget: totalCashback
+            }
+        });
+
+        const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        const sheetLabel = parsedSheet < SHEET_LETTERS.length ? SHEET_LETTERS[parsedSheet] : `${parsedSheet + 1}`;
+
+        res.json({
+            message: `Updated ${updated.count} QR codes on Sheet ${sheetLabel} to Rs. ${parsedAmount}`,
+            totalBudget: totalCashback,
+            updated: updated.count,
+            sheetLabel
+        });
+    } catch (error) {
+        console.error('Assign Sheet Cashback Error:', error);
+        res.status(500).json({ message: 'Failed to assign cashback', error: error.message });
+    }
+};
+
+// Pay for a specific sheet's cashback (Postpaid)
+exports.paySheetCashback = async (req, res) => {
+    try {
+        const { id: campaignId } = req.params;
+        const { sheetIndex, cashbackAmount } = req.body;
+
+        const parsedSheet = Number.parseInt(sheetIndex, 10);
+        const parsedAmount = Number.parseFloat(cashbackAmount);
+
+        if (!Number.isFinite(parsedSheet) || parsedSheet < 0) {
+            return res.status(400).json({ message: 'Invalid sheet index' });
+        }
+        if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+            return res.status(400).json({ message: 'Invalid cashback amount' });
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
+
+            const campaign = await tx.campaign.findUnique({
+                where: { id: campaignId },
+                include: { Brand: true }
+            });
+
+            if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
+                throw new Error('Campaign not found');
+            }
+            if (campaign.planType !== 'postpaid') {
+                throw new Error('Sheet payment is only for postpaid campaigns');
+            }
+
+            // Calculate total for this sheet
+            const QRS_PER_SHEET = 25;
+            const allQrsCount = await tx.qRCode.count({
+                where: { campaignId, status: { in: ['funded', 'generated', 'active', 'assigned'] } }
+            });
+
+            const start = parsedSheet * QRS_PER_SHEET;
+            const end = start + QRS_PER_SHEET;
+            const sheetQrCount = Math.max(0, Math.min(QRS_PER_SHEET, allQrsCount - start));
+
+            if (sheetQrCount <= 0) {
+                throw new Error('No QR codes found for this sheet');
+            }
+
+            // 1. Cashback Total (to be locked)
+            const cashbackTotal = parsedAmount * sheetQrCount;
+
+             // 2. Tech Fee (Printing Cost)
+            const printCostPerQr = resolveTechFeePerQr({
+                vendor,
+                brand: campaign?.Brand
+            });
+            const techFeeSubtotal = toNumber(sheetQrCount * printCostPerQr, 0);
+            const techFeeTax = toNumber(techFeeSubtotal * INVOICE_GST_RATE, 0);
+            const techFeeTotal = toNumber(techFeeSubtotal + techFeeTax, 0);
+
+            // 3. Voucher Type Fee
+            const VOUCHER_FEE_MAP = { digital_voucher: 0.20, printed_qr: 0.50, none: 0 };
+            const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[campaign.voucherType] || 0, 0);
+            const voucherFeeSubtotal = toNumber(sheetQrCount * voucherFeePerQr, 0);
+            const voucherFeeTax = toNumber(voucherFeeSubtotal * INVOICE_GST_RATE, 0);
+            const voucherFeeTotal = toNumber(voucherFeeSubtotal + voucherFeeTax, 0);
+
+            const totalToPay = cashbackTotal + techFeeTotal + voucherFeeTotal;
+
+            if (wallet.balance < totalToPay) {
+                throw new Error(`Insufficient wallet balance. Required: Rs. ${totalToPay.toFixed(2)}`);
+            }
+
+            // Ensure budget exists
+            let campaignBudget = await tx.campaignBudget.findFirst({
+                 where: { campaignId, status: 'active' }
+            });
+
+            if (!campaignBudget) {
+                 campaignBudget = await tx.campaignBudget.create({
+                     data: {
+                         campaignId,
+                         vendorId: vendor.id,
+                         initialLockedAmount: 0,
+                         lockedAmount: 0,
+                         spentAmount: 0,
+                         status: 'active'
+                     }
+                 });
+            }
+
+            // --- PROCESS FEES (Expenses) ---
+
+            // Charge Tech Fee
+            if (techFeeTotal > 0) {
+                 const feeInvoice = await createFinanceInvoice(tx, {
+                     vendorId: vendor.id,
+                     brandId: campaign.Brand?.id,
+                     campaignBudgetId: campaignBudget.id,
+                     type: 'FEE_TAX_INVOICE',
+                     subtotal: techFeeSubtotal,
+                     tax: techFeeTax,
+                     label: `Technology fee for Sheet ${parsedSheet + 1} (${campaign.title})`,
+                     metadata: { campaignId, sheetIndex: parsedSheet, count: sheetQrCount, feePerQr: printCostPerQr }
+                 });
+                 await chargeFee(tx, vendor.id, techFeeTotal, {
+                     referenceId: campaign.id,
+                     campaignBudgetId: campaignBudget.id,
+                     invoiceId: feeInvoice.id,
+                     description: `Technology fee for Sheet ${parsedSheet + 1}`,
+                     metadata: { campaignId, sheetIndex: parsedSheet }
+                 });
+            }
+
+            // Charge Voucher Fee
+            if (voucherFeeTotal > 0) {
+                 const voucherInvoice = await createFinanceInvoice(tx, {
+                     vendorId: vendor.id,
+                     brandId: campaign.Brand?.id,
+                     campaignBudgetId: campaignBudget.id,
+                     type: 'FEE_TAX_INVOICE',
+                     subtotal: voucherFeeSubtotal,
+                     tax: voucherFeeTax,
+                     label: `Voucher fee (${campaign.voucherType}) for Sheet ${parsedSheet + 1}`,
+                     metadata: { campaignId, sheetIndex: parsedSheet, count: sheetQrCount, feePerQr: voucherFeePerQr }
+                 });
+                 await chargeFee(tx, vendor.id, voucherFeeTotal, {
+                     referenceId: campaign.id,
+                     campaignBudgetId: campaignBudget.id,
+                     invoiceId: voucherInvoice.id,
+                     category: 'voucher_fee_charge',
+                     description: `Voucher fee for Sheet ${parsedSheet + 1}`,
+                     metadata: { campaignId, sheetIndex: parsedSheet }
+                 });
+            }
+
+            // --- LOCK CASHBACK (Asset) ---
+
+            if (cashbackTotal > 0) {
+                const depositInvoice = await createFinanceInvoice(tx, {
+                    vendorId: vendor.id,
+                    brandId: campaign.Brand?.id,
+                    campaignBudgetId: campaignBudget.id,
+                    type: 'DEPOSIT_RECEIPT',
+                    subtotal: cashbackTotal,
+                    tax: 0,
+                    label: `Cashback locked for Sheet ${parsedSheet + 1} (${sheetQrCount} QRs @ Rs. ${parsedAmount})`,
+                    metadata: {
+                        campaignId,
+                        sheetIndex: parsedSheet,
+                        count: sheetQrCount,
+                        rate: parsedAmount
+                    }
+                });
+
+                await lock(tx, vendor.id, cashbackTotal, {
+                    referenceId: campaign.id,
+                    campaignBudgetId: campaignBudget.id,
+                    invoiceId: depositInvoice.id,
+                    description: `Cashback locked for Sheet ${parsedSheet + 1}`,
+                    metadata: {
+                        campaignId,
+                        sheetIndex: parsedSheet
+                    }
+                });
+                
+                // Update budget total
+                await tx.campaignBudget.update({
+                    where: { id: campaignBudget.id },
+                    data: { 
+                        lockedAmount: { increment: cashbackTotal },
+                        initialLockedAmount: { increment: cashbackTotal }
+                    }
+                });
+            }
+
+            // Ensure Campaign.subtotal/totalBudget are also updated to match current state
+            const aggregate = await tx.qRCode.aggregate({
+                where: { campaignId },
+                _sum: { cashbackAmount: true }
+            });
+            const totalCashback = aggregate._sum.cashbackAmount || 0;
+
+            await tx.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    subtotal: totalCashback,
+                    totalBudget: totalCashback
+                }
+            });
+
+            return { totalPaid: totalToPay, sheetQrCount, techFeeTotal, voucherFeeTotal, cashbackTotal, campaignTotalBudget: totalCashback };
+        });
+
+        res.json({
+            message: `Successfully paid Rs. ${result.totalPaid.toFixed(2)} for ${result.sheetQrCount} QRs.`,
+            ...result
+        });
+
+    } catch (error) {
+        console.error('Pay Sheet Cashback Error:', error);
+        res.status(500).json({ message: error.message || 'Failed to pay for sheet' });
+    }
+};
+
 // Download QR PDF for a campaign (already funded/redeemed QRs only)
 exports.downloadCampaignQrPdf = async (req, res) => {
     try {
@@ -2858,6 +3256,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                     in: ['funded', 'redeemed', 'generated', 'active', 'assigned']
                 }
             },
+            orderBy: { createdAt: 'asc' },
             select: { uniqueHash: true, cashbackAmount: true }
         });
 
@@ -2872,7 +3271,8 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             campaignTitle: campaign.title,
             orderId: campaignId,
             brandName: campaign.Brand.name,
-            brandLogoUrl: campaign.Brand.logoUrl
+            brandLogoUrl: campaign.Brand.logoUrl,
+            planType: campaign.planType
         });
 
         res.setHeader('Content-Type', 'application/pdf');

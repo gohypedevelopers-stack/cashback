@@ -245,7 +245,7 @@ const chargeFee = async (tx, vendorId, amount, refs = {}) => {
         walletId: wallet.id,
         type: 'debit',
         amount: normalizedAmount,
-        category: 'tech_fee_charge',
+        category: refs.category || 'tech_fee_charge',
         description: refs.description || 'Technology fee charged',
         referenceId: refs.referenceId,
         campaignBudgetId: refs.campaignBudgetId,

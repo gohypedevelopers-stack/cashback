@@ -53,7 +53,9 @@ const {
     createVendorSupportTicket,
     getVendorSupportTickets,
     getVendorProductReports,
-    downloadVendorProductReport
+    downloadVendorProductReport,
+    assignSheetCashback,
+    paySheetCashback
 } = require('../controllers/vendorController');
 
 router.use(protect);
@@ -122,6 +124,8 @@ restrictedRouter.put('/campaigns/:id/status', updateCampaignStatus);
 restrictedRouter.delete('/campaigns/:id', deleteCampaign);
 restrictedRouter.get('/campaigns/stats', getCampaignStats);
 restrictedRouter.get('/campaigns/:id/download', downloadCampaignQrPdf);
+restrictedRouter.put('/campaigns/:id/sheet-cashback', assignSheetCashback);
+restrictedRouter.post('/campaigns/:id/sheet-pay', paySheetCashback);
 
 // Product Management
 restrictedRouter.post('/campaigns/:id/pay', payCampaign);
