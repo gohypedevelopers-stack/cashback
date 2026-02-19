@@ -16,12 +16,19 @@ const claimRoutes = require('./routes/claimRoutes');
 const path = require('path');
 
 const app = express();
+const corsOptions = {
+    origin: true,
+    credentials: true,
+    maxAge: 86400,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+};
 
 // Middleware
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" } // Allow accessing images from other domains/frontend
 }));
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -62,3 +69,4 @@ const startServer = async () => {
 };
 
 startServer();
+
