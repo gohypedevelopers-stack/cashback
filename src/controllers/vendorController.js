@@ -3268,12 +3268,27 @@ exports.paySheetCashback = async (req, res) => {
 // Download QR PDF for a campaign (already funded/redeemed QRs only)
 exports.downloadCampaignQrPdf = async (req, res) => {
     try {
+        const requestStartedAt = Date.now();
+        const marks = {};
+        const mark = (key) => {
+            marks[key] = Date.now();
+        };
         const { id: campaignId } = req.params;
+        const explicitFastModeRequested = ['1', 'true', 'yes'].includes(String(req.query?.fast || '').toLowerCase());
+        const skipLogoRequested = ['1', 'true', 'yes'].includes(String(req.query?.skipLogo || '').toLowerCase());
+        const parsedSheetIndex = Number.parseInt(req.query?.sheetIndex, 10);
+        const hasRequestedSheet =
+            Number.isFinite(parsedSheetIndex) && parsedSheetIndex >= 0;
+        const sheetLabelFor = (index) => {
+            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            return index < letters.length ? letters[index] : `${index + 1}`;
+        };
 
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) {
             return res.status(404).json({ message: 'Vendor profile not found' });
         }
+        mark('vendorLookup');
 
         // Get campaign and verify ownership
         const campaign = await prisma.campaign.findUnique({
@@ -3295,28 +3310,57 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         if (campaign.status !== 'active') {
             return res.status(400).json({ message: 'PDF is only available for active campaigns' });
         }
+        mark('campaignLookup');
+
+        const qrWhere = {
+            campaignId,
+            status: {
+                in: ['funded', 'redeemed', 'generated', 'active', 'assigned']
+            }
+        };
+
+        const isSheetScopedPostpaid =
+            campaign.planType === 'postpaid' && hasRequestedSheet;
+        const fastModeRequested = explicitFastModeRequested || isSheetScopedPostpaid;
+        const QRS_PER_SHEET = 25;
+        const needsCampaignQrCount = !(isSheetScopedPostpaid && fastModeRequested);
+        const totalCampaignQrCount = needsCampaignQrCount
+            ? await prisma.qRCode.count({ where: qrWhere })
+            : null;
+
+        if (
+            isSheetScopedPostpaid &&
+            Number.isFinite(totalCampaignQrCount) &&
+            parsedSheetIndex * QRS_PER_SHEET >= totalCampaignQrCount
+        ) {
+            return res.status(400).json({ message: 'Invalid sheet selected for download' });
+        }
 
         const qrCodes = await prisma.qRCode.findMany({
-            where: {
-                campaignId,
-                status: {
-                    in: ['funded', 'redeemed', 'generated', 'active', 'assigned']
-                }
-            },
+            where: qrWhere,
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            ...(isSheetScopedPostpaid
+                ? {
+                    skip: parsedSheetIndex * QRS_PER_SHEET,
+                    take: QRS_PER_SHEET
+                }
+                : {}),
             select: { uniqueHash: true, cashbackAmount: true }
         });
+        mark('qrFetch');
 
         if (!qrCodes.length) {
             return res.status(400).json({
-                message: 'No funded QRs found for this campaign. Recharge inventory first, then download.'
+                message: isSheetScopedPostpaid
+                    ? `No QR codes found for Sheet ${sheetLabelFor(parsedSheetIndex)}.`
+                    : 'No funded QRs found for this campaign. Recharge inventory first, then download.'
             });
         }
         const normalizedQrCodes = Array.isArray(qrCodes) ? qrCodes.map((item) => ({ ...item })) : [];
 
         // For postpaid campaigns, use paid sheet lock transactions as source-of-truth for PDF display.
-        // This keeps downloaded sheet amounts aligned with what vendor actually paid.
-        if (campaign.planType === 'postpaid') {
+        // In fast mode, skip this expensive remap to keep sheet download latency minimal.
+        if (campaign.planType === 'postpaid' && !fastModeRequested) {
             const lockTransactions = await prisma.transaction.findMany({
                 where: {
                     referenceId: campaignId,
@@ -3338,35 +3382,81 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                 paidBySheet.set(sheetIndex, next);
             });
 
-            const QRS_PER_SHEET = 25;
-            normalizedQrCodes.forEach((qr, index) => {
-                const sheetIndex = Math.floor(index / QRS_PER_SHEET);
-                const sheetStart = sheetIndex * QRS_PER_SHEET;
-                const sheetCount = Math.min(QRS_PER_SHEET, normalizedQrCodes.length - sheetStart);
-                const paidTotal = toNumber(paidBySheet.get(sheetIndex), 0);
-                if (paidTotal > 0 && sheetCount > 0) {
-                    qr.cashbackAmount = toNumber(paidTotal / sheetCount, 0);
-                } else {
-                    // Unpaid sheets must not display assigned cashback in downloaded PDF.
-                    qr.cashbackAmount = 0;
-                }
-            });
+            if (isSheetScopedPostpaid) {
+                const sheetCount = normalizedQrCodes.length;
+                const paidTotal = toNumber(paidBySheet.get(parsedSheetIndex), 0);
+                const perQrCashback =
+                    paidTotal > 0 && sheetCount > 0
+                        ? toNumber(paidTotal / sheetCount, 0)
+                        : 0;
+
+                normalizedQrCodes.forEach((qr) => {
+                    qr.cashbackAmount = perQrCashback;
+                });
+            } else {
+                normalizedQrCodes.forEach((qr, index) => {
+                    const sheetIndex = Math.floor(index / QRS_PER_SHEET);
+                    const sheetStart = sheetIndex * QRS_PER_SHEET;
+                    const sheetCount = Math.min(QRS_PER_SHEET, normalizedQrCodes.length - sheetStart);
+                    const paidTotal = toNumber(paidBySheet.get(sheetIndex), 0);
+                    if (paidTotal > 0 && sheetCount > 0) {
+                        qr.cashbackAmount = toNumber(paidTotal / sheetCount, 0);
+                    } else {
+                        // Unpaid sheets must not display assigned cashback in downloaded PDF.
+                        qr.cashbackAmount = 0;
+                    }
+                });
+            }
         }
-        const productName = await resolveCampaignProductName(campaign);
+        const productName = fastModeRequested
+            ? campaign?.Product?.name || null
+            : await resolveCampaignProductName(campaign);
+        const isCompactPostpaidDownload =
+            campaign.planType === 'postpaid' &&
+            (fastModeRequested || normalizedQrCodes.every((qr) => toNumber(qr?.cashbackAmount, 0) <= 0));
+        const totalSheetCountForPdf =
+            campaign.planType === 'postpaid'
+                ? Number.isFinite(totalCampaignQrCount)
+                    ? Math.max(1, Math.ceil(totalCampaignQrCount / QRS_PER_SHEET))
+                    : undefined
+                : undefined;
+        const downloadSheetLabel =
+            isSheetScopedPostpaid ? sheetLabelFor(parsedSheetIndex) : null;
+        const shouldSkipBrandLogo = skipLogoRequested || (campaign.planType === 'postpaid' && fastModeRequested);
 
         const pdfBuffer = await generateQrPdf({
             qrCodes: normalizedQrCodes,
             campaignTitle: campaign.title,
             orderId: campaignId,
             brandName: campaign.Brand.name,
-            brandLogoUrl: campaign.Brand.logoUrl,
+            brandLogoUrl: shouldSkipBrandLogo ? null : campaign.Brand.logoUrl,
             planType: campaign.planType,
-            productName
+            productName,
+            compactMode: isCompactPostpaidDownload,
+            startSheetIndex: isSheetScopedPostpaid ? parsedSheetIndex : 0,
+            totalSheetCount: totalSheetCountForPdf
         });
+        mark('pdfReady');
+
+        const fileName = isSheetScopedPostpaid
+            ? `QR_Campaign_${campaignId.slice(-8)}_Sheet_${downloadSheetLabel}.pdf`
+            : `QR_Campaign_${campaignId.slice(-8)}.pdf`;
+        const setupMs = Math.max(0, (marks.campaignLookup || Date.now()) - requestStartedAt);
+        const dbMs = Math.max(0, (marks.qrFetch || Date.now()) - (marks.campaignLookup || requestStartedAt));
+        const pdfMs = Math.max(0, (marks.pdfReady || Date.now()) - (marks.qrFetch || requestStartedAt));
+        const totalMs = Date.now() - requestStartedAt;
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="QR_Campaign_${campaignId.slice(-8)}.pdf"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         res.setHeader('Content-Length', pdfBuffer.length);
+        res.setHeader('X-PDF-Fast-Mode', fastModeRequested ? '1' : '0');
+        res.setHeader('X-PDF-Skip-Logo', shouldSkipBrandLogo ? '1' : '0');
+        res.setHeader('X-PDF-QR-Count', String(normalizedQrCodes.length));
+        res.setHeader('X-PDF-Total-Ms', String(totalMs));
+        res.setHeader(
+            'Server-Timing',
+            `setup;dur=${setupMs},db;dur=${dbMs},pdf;dur=${pdfMs},total;dur=${totalMs}`
+        );
         res.send(pdfBuffer);
 
         safeLogVendorActivity({
@@ -3374,7 +3464,10 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             action: 'campaign_qr_pdf_download',
             entityType: 'campaign',
             entityId: campaignId,
-            metadata: { qrCount: qrCodes.length },
+            metadata: {
+                qrCount: normalizedQrCodes.length,
+                sheetIndex: isSheetScopedPostpaid ? parsedSheetIndex : null
+            },
             req
         });
 
@@ -3382,12 +3475,15 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             await createVendorNotification({
                 vendorId: vendor.id,
                 title: 'Campaign PDF downloaded',
-                message: `Downloaded QR PDF for campaign "${campaign.title}".`,
+                message: isSheetScopedPostpaid
+                    ? `Downloaded Sheet ${downloadSheetLabel} QR PDF for campaign "${campaign.title}".`
+                    : `Downloaded QR PDF for campaign "${campaign.title}".`,
                 type: 'pdf-downloaded',
                 metadata: {
                     tab: 'campaigns',
                     campaignId,
-                    qrCount: qrCodes.length
+                    qrCount: normalizedQrCodes.length,
+                    sheetIndex: isSheetScopedPostpaid ? parsedSheetIndex : null
                 }
             });
         } catch (notificationError) {
