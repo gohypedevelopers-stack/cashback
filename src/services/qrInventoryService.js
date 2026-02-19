@@ -290,14 +290,40 @@ const allocateInventoryQrs = async (
         where.seriesCode = normalizedSeries;
     }
 
-    const inventoryQrs = await tx.qRCode.findMany({
+    const orderBy = normalizedSeries
+        ? [{ seriesOrder: 'asc' }, { createdAt: 'asc' }]
+        : [{ createdAt: 'asc' }];
+    let inventoryQrs = await tx.qRCode.findMany({
         where,
-        orderBy: normalizedSeries
-            ? [{ seriesOrder: 'asc' }, { createdAt: 'asc' }]
-            : [{ createdAt: 'asc' }],
+        orderBy,
         take: safeQuantity,
         select: { id: true, uniqueHash: true }
     });
+
+    if (inventoryQrs.length < safeQuantity) {
+        const missingCount = safeQuantity - inventoryQrs.length;
+        const seriesOrderCursor = await tx.qRCode.aggregate({
+            where: {
+                vendorId,
+                seriesCode: normalizedSeries || DEFAULT_AUTO_SERIES
+            },
+            _max: { seriesOrder: true }
+        });
+        const startOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
+        const rows = buildInventoryRows(vendorId, missingCount, {
+            seriesCode: normalizedSeries || DEFAULT_AUTO_SERIES,
+            startOrder,
+            sourceBatch: 'AUTO_ON_DEMAND'
+        });
+        await createInChunks(tx, rows);
+
+        inventoryQrs = await tx.qRCode.findMany({
+            where,
+            orderBy,
+            take: safeQuantity,
+            select: { id: true, uniqueHash: true }
+        });
+    }
 
     if (inventoryQrs.length < safeQuantity) {
         const seriesMessage = normalizedSeries ? ` for series "${normalizedSeries}"` : '';

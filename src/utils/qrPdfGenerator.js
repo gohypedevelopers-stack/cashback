@@ -25,9 +25,10 @@ const QRS_PER_SHEET = 25;
  * @param {string} [options.brandName] - Brand Name
  * @param {string} [options.brandLogoUrl] - Brand Logo URL
  * @param {string} [options.planType] - 'prepaid' or 'postpaid'
+ * @param {string} [options.productName] - Product Name
  * @returns {Promise<Buffer>} PDF buffer
  */
-async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brandLogoUrl, planType }) {
+async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brandLogoUrl, planType, productName }) {
     return new Promise(async (resolve, reject) => {
         try {
             const doc = new PDFDocument({
@@ -68,11 +69,14 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                     // --- Header ---
                     let yPos = 20;
 
-                    // Cashback amount on top-right
-                    const sheetCashback = Number(sheetQrs[0]?.cashbackAmount) || 0;
+                    // Cashback amount for this sheet (pick first positive value, fallback 0)
+                    const sheetCashback =
+                        sheetQrs
+                            .map((item) => Number(item?.cashbackAmount))
+                            .find((value) => Number.isFinite(value) && value > 0) || 0;
                     if (sheetCashback > 0) {
                         doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
-                        doc.text(`Rs. ${sheetCashback.toFixed(0)}`, doc.page.width - 130, yPos, { width: 100, align: 'right' });
+                        doc.text(`Rs. ${sheetCashback.toFixed(0)}`, 30, yPos, { width: 120, align: 'left' });
                         doc.fillColor('black');
                     }
 
@@ -100,12 +104,15 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                     doc.fontSize(9).font('Helvetica').text(`Campaign: ${campaignTitle}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
                     yPos += 13;
 
+                    doc.text(`Product: ${productName || 'N/A'}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                    yPos += 13;
+
                     doc.text(`Sheet ${sheetIdx + 1} of ${totalSheets}  |  ${sheetQrs.length} QR Codes`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
                     yPos += 18;
 
                     // --- Grid: 5 cols x 5 rows = 25 QRs per sheet ---
                     const qrSize = 85;
-                    const labelHeight = 22;
+                    const labelHeight = 30;
                     const cellWidth = (doc.page.width - 60) / 5;
                     const cellHeight = qrSize + labelHeight + 6;
                     const startX = 30;
@@ -137,6 +144,13 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                             width: cellWidth,
                             align: 'center'
                         });
+
+                        const qrCashback = Number(qr?.cashbackAmount) || 0;
+                        doc.fontSize(8).font('Helvetica');
+                        doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
+                            width: cellWidth,
+                            align: 'center'
+                        });
                     }
                 }
             } else {
@@ -165,6 +179,9 @@ async function generateQrPdf({ qrCodes, campaignTitle, orderId, brandName, brand
                 yPos += 20;
 
                 doc.fontSize(10).font('Helvetica').text(`Campaign: ${campaignTitle}`, { align: 'center' });
+                yPos += 15;
+
+                doc.text(`Product: ${productName || 'N/A'}`, { align: 'center' });
                 yPos += 15;
 
                 doc.text(`Order ID: ${orderId.slice(-8)}`, { align: 'center' });

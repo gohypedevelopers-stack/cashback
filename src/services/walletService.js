@@ -35,6 +35,13 @@ const ensureVendorWallet = async (tx, vendorId) => {
     return wallet;
 };
 
+const normalizeTransactionCategory = (category) => {
+    if (category === 'voucher_fee_charge') {
+        return 'tech_fee_charge';
+    }
+    return category;
+};
+
 const createTransaction = async (
     tx,
     {
@@ -56,7 +63,7 @@ const createTransaction = async (
             walletId,
             type,
             amount,
-            category,
+            category: normalizeTransactionCategory(category),
             status,
             description: description || null,
             referenceId: referenceId || null,

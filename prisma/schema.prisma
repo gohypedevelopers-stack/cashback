@@ -571,6 +571,7 @@ enum TransactionCategory {
   locked_spend
   unlock_refund
   tech_fee_charge
+  voucher_fee_charge
   qr_purchase
   cashback_payout
   refund
