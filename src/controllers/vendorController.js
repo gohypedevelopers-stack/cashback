@@ -1467,7 +1467,7 @@ exports.requestCredentialUpdate = async (req, res) => {
 
 exports.requestBrand = async (req, res) => {
     try {
-        const { name, website, logoUrl } = req.body;
+        const { name, website, logoUrl, defaultPlanType, description, industry } = req.body;
 
         if (!name) {
             return res.status(400).json({ message: 'Brand name is required' });
@@ -1490,8 +1490,10 @@ exports.requestBrand = async (req, res) => {
                 name,
                 website,
                 logoUrl,
+                // description field removed as it does not exist on Brand model
                 vendorId: vendor.id,
-                status: 'active'
+                status: 'active',
+                defaultPlanType: defaultPlanType || 'prepaid'
             }
         });
 
@@ -2803,7 +2805,7 @@ exports.payCampaign = async (req, res) => {
                 fundedCount,
                 selectedSeries: requestedSeries
             };
-        });
+        }, { timeout: 30000 });
 
         safeLogVendorActivity({
             vendorId: result.vendorId,

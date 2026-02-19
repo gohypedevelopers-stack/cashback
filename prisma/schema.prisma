@@ -74,7 +74,8 @@ model Brand {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   vendorId        String?       @unique
-  rejectionReason String?
+  rejectionReason    String?
+  defaultPlanType    PlanType      @default(prepaid)
   ActivityLog     ActivityLog[]
   Invoices        Invoice[]
   Vendor          Vendor?       @relation(fields: [vendorId], references: [id])
