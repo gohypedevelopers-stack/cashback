@@ -36,7 +36,7 @@ Authorization: Bearer {{customerToken}}
 3. Public routes
 4. Customer (`/api/user`)
 5. Vendor (`/api/vendor`) open routes
-6. Vendor restricted routes (requires active subscription)
+6. Vendor feature routes
 7. Admin routes (`/api/admin`)
 8. Payments (`/api/payments`)
 9. Upload (`/api/upload`)
@@ -129,7 +129,7 @@ Returns:
 
 ## 8. Vendor APIs (`/api/vendor`) [Protected + `role=vendor`]
 
-### 8.1 Vendor Open Routes (no subscription check)
+### 8.1 Vendor Open Routes
 
 | Method | Endpoint | Body/Query |
 |---|---|---|
@@ -150,7 +150,7 @@ Returns:
 | POST | `/api/vendor/support` | `{ "subject", "message", "priority?" }` |
 | GET | `/api/vendor/brand-inquiries` | - |
 
-### 8.2 Vendor Restricted Routes (active subscription required)
+### 8.2 Vendor Feature Routes
 
 | Method | Endpoint | Body/Query |
 |---|---|---|
@@ -191,13 +191,11 @@ Returns:
 
 | Method | Endpoint | Body/Query |
 |---|---|---|
-| POST | `/api/admin/brands` | `{ "name", "logoUrl?", "website?", "subscriptionType?", "vendorEmail?", "vendorPhone?", "vendorId?", "qrPricePerUnit?" }` |
+| POST | `/api/admin/brands` | `{ "name", "logoUrl?", "website?", "vendorEmail?", "vendorPhone?", "vendorId?", "qrPricePerUnit?" }` |
 | GET | `/api/admin/brands` | `status?`, `vendorId?` |
 | GET | `/api/admin/brands/:id` | - |
 | PUT | `/api/admin/brands/:id` | `{ "name?", "logoUrl?", "website?", "qrPricePerUnit?" }` |
 | PUT | `/api/admin/brands/:id/verify` | `{ "status", "reason?" }` |
-| GET | `/api/admin/subscriptions` | `status?` |
-| PUT | `/api/admin/vendors/:id/subscription` | `{ "status?", "extendMonths?", "subscriptionType?", "startDate?" }` |
 
 ### 9.3 Product (admin-managed)
 
@@ -314,7 +312,6 @@ Content-Type: application/json
 {
   "name": "My Brand",
   "vendorEmail": "vendor@example.com",
-  "subscriptionType": "MONTHS_12",
   "qrPricePerUnit": 1.0
 }
 ```
@@ -335,11 +332,9 @@ Body (form-data):
 
 - `401 Invalid credentials`: wrong email/username/password.
 - `401 Not authorized, token failed`: expired or invalid JWT.
-- `403 Vendor subscription is not active`: vendor can access open routes, but restricted routes are blocked.
 - `500 Server Error` with Prisma details: payload shape mismatch or invalid relation data.
 
 ## 12. Notes
 
 - Vendor onboarding creates pending vendor/brand by default in self-registration flow.
-- Restricted vendor routes are gated by `requireActiveSubscription`.
 - Some endpoints exist in both `/api/user` and `/api/payments` for payout workflows.

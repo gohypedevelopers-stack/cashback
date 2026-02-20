@@ -90,7 +90,7 @@ router.get('/transactions', getVendorTransactions);
 router.get('/support', getVendorSupportTickets);
 router.post('/support', createVendorSupportTicket);
 
-// --- VENDOR ROUTES (No Subscription Gating) ---
+// --- VENDOR ROUTES ---
 const restrictedRouter = express.Router();
 
 // QR Codes
