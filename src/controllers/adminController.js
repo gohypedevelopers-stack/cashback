@@ -2579,6 +2579,14 @@ exports.updateBrandDetails = async (req, res) => {
         if (name !== undefined) data.name = name;
         if (logoUrl !== undefined) data.logoUrl = logoUrl;
         if (website !== undefined) data.website = website;
+        if (req.body.defaultPlanType !== undefined) {
+            const plan = req.body.defaultPlanType;
+            if (['prepaid', 'postpaid'].includes(plan)) {
+                data.defaultPlanType = plan;
+            } else {
+                 return res.status(400).json({ message: 'Invalid plan type. Must be prepaid or postpaid' });
+            }
+        }
         if (qrPricePerUnit !== undefined && qrPricePerUnit !== '') {
             const normalizedQrPrice = parseQrPrice(qrPricePerUnit);
             if (normalizedQrPrice === null) {
@@ -2622,6 +2630,21 @@ exports.updateBrandDetails = async (req, res) => {
                 entityType: 'brand',
                 entityId: brand.id,
                 metadata: { from: previousQrPrice, to: nextQrPrice },
+                req
+            });
+        }
+
+    // 
+    if (data.defaultPlanType) {
+            safeLogActivity({
+                actorUserId: req.user?.id,
+                actorRole: req.user?.role,
+                brandId: brand.id,
+                vendorId: brand.vendorId || existingBrand.vendorId || undefined,
+                action: 'brand_plan_type_update',
+                entityType: 'brand',
+                entityId: brand.id,
+                metadata: { planType: data.defaultPlanType },
                 req
             });
         }
