@@ -1108,15 +1108,13 @@ exports.getVendorCampaigns = async (req, res) => {
 
                 const sheets = [];
                 const QRS_PER_SHEET = 25;
-                const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                const toRomanSheet = (n) => { const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I']; let r='',x=Math.max(1,Math.floor(n)); for(let i=0;i<v.length;i++){while(x>=v[i]){r+=s[i];x-=v[i];}} return r; };
 
                 for (let i = 0; i < qrs.length; i += QRS_PER_SHEET) {
                    const chunk = qrs.slice(i, i + QRS_PER_SHEET);
                    const amount = Number(chunk[0]?.cashbackAmount || 0);
                    const sheetIndex = i / QRS_PER_SHEET;
-                   const label = sheetIndex < SHEET_LETTERS.length 
-                        ? SHEET_LETTERS[sheetIndex] 
-                        : `${sheetIndex + 1}`;
+                   const label = toRomanSheet(sheetIndex + 1);
                    
                    sheets.push({
                         index: sheetIndex,
@@ -3110,8 +3108,8 @@ exports.assignSheetCashback = async (req, res) => {
             }
         });
 
-        const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        const sheetLabel = parsedSheet < SHEET_LETTERS.length ? SHEET_LETTERS[parsedSheet] : `${parsedSheet + 1}`;
+        const toRomanLabel = (n) => { const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I']; let r='',x=Math.max(1,Math.floor(n)); for(let i=0;i<v.length;i++){while(x>=v[i]){r+=s[i];x-=v[i];}} return r; };
+        const sheetLabel = toRomanLabel(parsedSheet + 1);
 
         res.json({
             message: `Updated ${updated.count} QR codes on Sheet ${sheetLabel} to Rs. ${parsedAmount}`,
@@ -3280,8 +3278,10 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const hasRequestedSheet =
             Number.isFinite(parsedSheetIndex) && parsedSheetIndex >= 0;
         const sheetLabelFor = (index) => {
-            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-            return index < letters.length ? letters[index] : `${index + 1}`;
+            const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I'];
+            let r='', n=Math.max(1,Math.floor(index+1));
+            for(let i=0;i<v.length;i++){while(n>=v[i]){r+=s[i];n-=v[i];}}
+            return r;
         };
 
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });

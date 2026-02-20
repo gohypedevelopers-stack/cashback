@@ -13,7 +13,16 @@ const getQrBaseUrl = () => {
     return String(base).replace(/\/$/, '');
 };
 
-const SHEET_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const toRoman = (num) => {
+    const vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+    const syms = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I'];
+    let result = '';
+    let n = Math.max(1, Math.floor(num));
+    for (let i = 0; i < vals.length; i++) {
+        while (n >= vals[i]) { result += syms[i]; n -= vals[i]; }
+    }
+    return result;
+};
 const QRS_PER_SHEET = 25;
 const ALLOWED_QR_ECC_LEVELS = new Set(['L', 'M', 'Q', 'H']);
 const QR_ERROR_CORRECTION_LEVEL = (() => {
@@ -257,9 +266,7 @@ async function generateQrPdf({
                     if (sheetIdx > 0) doc.addPage();
 
                     const globalSheetIdx = sheetOffset + sheetIdx;
-                    const sheetLetter = globalSheetIdx < SHEET_LETTERS.length
-                        ? SHEET_LETTERS[globalSheetIdx]
-                        : `${globalSheetIdx + 1}`;
+                    const sheetLetter = toRoman(globalSheetIdx + 1);
                     const sheetQrs = qrCodes.slice(sheetIdx * QRS_PER_SHEET, (sheetIdx + 1) * QRS_PER_SHEET);
 
                     // --- Header ---
@@ -326,24 +333,26 @@ async function generateQrPdf({
                             height: qrSize
                         });
 
-                        if (!compactMode) {
-                            // Sheet-based ID label: A1, A2, ... A25, B1, B2, ...
-                            const qrLabel = `${sheetLetter}${i + 1}`;
-                            const labelY = currentY + qrSize + 2;
-                            doc.fontSize(9).font('Helvetica-Bold');
-                            doc.text(qrLabel, currentX, labelY, {
+                        // Sheet-based ID label: A1, A2, ... A25, B1, B2, ...
+                        const SHEET_ID_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                        const idLetter = globalSheetIdx < SHEET_ID_LETTERS.length
+                            ? SHEET_ID_LETTERS[globalSheetIdx]
+                            : `${globalSheetIdx + 1}`;
+                        const qrLabel = `${idLetter}${i + 1}`;
+                        const labelY = currentY + qrSize + 2;
+                        doc.fontSize(9).font('Helvetica-Bold');
+                        doc.text(qrLabel, currentX, labelY, {
+                            width: cellWidth,
+                            align: 'center'
+                        });
+
+                        const qrCashback = Number(qr?.cashbackAmount) || 0;
+                        if (qrCashback > 0) {
+                            doc.fontSize(8).font('Helvetica');
+                            doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
                                 width: cellWidth,
                                 align: 'center'
                             });
-
-                            const qrCashback = Number(qr?.cashbackAmount) || 0;
-                            if (qrCashback > 0) {
-                                doc.fontSize(8).font('Helvetica');
-                                doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
-                                    width: cellWidth,
-                                    align: 'center'
-                                });
-                            }
                         }
                     }
                 }
