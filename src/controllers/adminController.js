@@ -2484,7 +2484,8 @@ exports.updateBrandDetails = async (req, res) => {
 
         res.json({ message: 'Brand updated', brand });
     } catch (error) {
-        res.status(500).json({ message: 'Error updating brand', error: error.message });
+        console.error('updateBrandDetails failed:', error);
+        res.status(500).json({ message: 'Error updating brand' });
     }
 };
 
