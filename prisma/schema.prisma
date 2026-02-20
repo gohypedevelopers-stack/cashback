@@ -80,7 +80,6 @@ model Brand {
   Vendor          Vendor?       @relation(fields: [vendorId], references: [id])
   Campaigns       Campaign[]
   Products        Product[]
-  Subscription    Subscription?
 }
 
 model Product {
@@ -227,18 +226,6 @@ model CampaignBudget {
 
   @@index([campaignId, status])
   @@index([vendorId, status, createdAt])
-}
-
-model Subscription {
-  id               String               @id @default(uuid())
-  brandId          String               @unique
-  subscriptionType SubscriptionDuration @default(MONTHS_12)
-  startDate        DateTime
-  endDate          DateTime
-  status           SubscriptionStatus   @default(ACTIVE)
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  Brand            Brand                @relation(fields: [brandId], references: [id])
 }
 
 model Transaction {
@@ -526,18 +513,6 @@ enum VendorStatus {
   paused
   rejected
   expired
-}
-
-enum SubscriptionStatus {
-  ACTIVE
-  PAUSED
-  EXPIRED
-}
-
-enum SubscriptionDuration {
-  MONTHS_6
-  MONTHS_12
-  MONTHS_24
 }
 
 enum CampaignStatus {

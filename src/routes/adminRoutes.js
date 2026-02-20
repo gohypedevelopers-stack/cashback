@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
 const {
-    createBrand, getAllBrands, getSubscriptions, updateVendorSubscription,
+    createBrand, getAllBrands,
     createCampaign, getAllCampaigns, updateCampaignDetails, getCampaignAnalytics,
     getAllVendors, createVendorProfile,
     verifyBrand, verifyCampaign,
@@ -39,7 +39,6 @@ router.post('/brands', createBrand);
 router.get('/brands', getAllBrands);
 router.get('/brands/:id', getBrandOverview);
 router.put('/brands/:id', updateBrandDetails);
-router.get('/subscriptions', getSubscriptions);
 router.put('/brands/:id/verify', verifyBrand);
 
 // Product Management (Admin Managed)
@@ -73,7 +72,6 @@ router.get('/vendors/:id/overview', getVendorOverview);
 router.get('/vendors/:id', getVendorDetails); // Detailed View
 router.put('/vendors/:id', updateVendorDetails);
 router.put('/vendors/:id/credentials', updateVendorCredentials);
-router.put('/vendors/:id/subscription', updateVendorSubscription);
 router.get('/vendors/:id/credential-requests', getVendorCredentialRequests);
 router.put('/credential-requests/:id/approve', approveCredentialRequest);
 router.put('/credential-requests/:id/reject', rejectCredentialRequest);

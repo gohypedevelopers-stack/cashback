@@ -7,12 +7,6 @@ const USERNAME = process.env.VENDOR_USERNAME || 'T-rex_tee';
 const PASSWORD = process.env.VENDOR_PASSWORD || '1234567890';
 const EMAIL = process.env.VENDOR_EMAIL || 'trex_tee@example.com';
 
-const addDays = (date, days) => {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
-};
-
 async function main() {
   console.log('Ensuring vendor account...');
   const normalizedUsername = USERNAME.trim();
@@ -110,32 +104,6 @@ async function main() {
     console.log('Activated brand:', brand.id);
   }
 
-  let subscription = await prisma.subscription.findUnique({ where: { brandId: brand.id } });
-  const now = new Date();
-  const endDate = addDays(now, 365);
-  if (!subscription) {
-    subscription = await prisma.subscription.create({
-      data: {
-        brandId: brand.id,
-        subscriptionType: 'MONTHS_12',
-        startDate: now,
-        endDate,
-        status: 'ACTIVE'
-      }
-    });
-    console.log('Created subscription:', subscription.id);
-  } else {
-    subscription = await prisma.subscription.update({
-      where: { id: subscription.id },
-      data: {
-        startDate: subscription.startDate || now,
-        endDate,
-        status: 'ACTIVE'
-      }
-    });
-    console.log('Activated subscription:', subscription.id);
-  }
-
   console.log('Done.');
   console.log(`Login with username: ${normalizedUsername}`);
   console.log(`Password: ${PASSWORD}`);
@@ -150,4 +118,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-

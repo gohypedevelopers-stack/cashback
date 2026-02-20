@@ -328,13 +328,7 @@ exports.getActiveBrands = async (req, res) => {
     try {
         const brands = await prisma.brand.findMany({
             where: {
-                status: 'active',
-                Subscription: {
-                    is: {
-                        status: 'ACTIVE',
-                        endDate: { gt: new Date() }
-                    }
-                }
+                status: 'active'
             },
             select: { id: true, name: true, logoUrl: true, website: true }
         });

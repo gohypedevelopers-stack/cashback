@@ -1,7 +1,6 @@
 const prisma = require('../config/prismaClient');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const { calculateSubscriptionWindow, normalizeSubscriptionType } = require('../utils/subscriptionUtils');
 const { parsePagination } = require('../utils/pagination');
 const { safeLogActivity } = require('../utils/activityLogger');
 const { seedVendorInventory } = require('../services/qrInventoryService');
@@ -85,7 +84,7 @@ const createVendorAccount = async (tx, { brandName, email, phone }) => {
 
 exports.createBrand = async (req, res) => {
     try {
-        const { name, logoUrl, website, subscriptionType, vendorEmail, vendorPhone, vendorId, qrPricePerUnit } = req.body;
+        const { name, logoUrl, website, vendorEmail, vendorPhone, vendorId, qrPricePerUnit } = req.body;
 
         if (!name) {
             return res.status(400).json({ message: 'Brand name is required' });
@@ -98,7 +97,6 @@ exports.createBrand = async (req, res) => {
 
         const normalizedEmail = typeof vendorEmail === 'string' ? vendorEmail.trim().toLowerCase() : null;
         const normalizedPhone = typeof vendorPhone === 'string' ? vendorPhone.trim() : null;
-        const subscriptionWindow = calculateSubscriptionWindow(subscriptionType);
 
         const result = await prisma.$transaction(async (tx) => {
             let vendor = null;
@@ -193,17 +191,7 @@ exports.createBrand = async (req, res) => {
                 }
             });
 
-            const subscription = await tx.subscription.create({
-                data: {
-                    brandId: brand.id,
-                    subscriptionType: subscriptionWindow.subscriptionType,
-                    startDate: subscriptionWindow.startDate,
-                    endDate: subscriptionWindow.endDate,
-                    status: 'ACTIVE'
-                }
-            });
-
-            return { brand, vendor, subscription, credentials };
+            return { brand, vendor, credentials };
         });
 
         safeLogActivity({
@@ -215,8 +203,7 @@ exports.createBrand = async (req, res) => {
             entityType: 'brand',
             entityId: result.brand?.id,
             metadata: {
-                name,
-                subscriptionType: result.subscription?.subscriptionType
+                name
             },
             req
         });
@@ -256,8 +243,7 @@ exports.getAllBrands = async (req, res) => {
                     include: {
                         Vendor: {
                             select: { businessName: true, contactPhone: true, status: true }
-                        },
-                        Subscription: true
+                        }
                     },
                     orderBy: { createdAt: 'desc' },
                     skip,
@@ -279,159 +265,13 @@ exports.getAllBrands = async (req, res) => {
             include: {
                 Vendor: {
                     select: { businessName: true, contactPhone: true, status: true }
-                },
-                Subscription: true
+                }
             },
             orderBy: { createdAt: 'desc' }
         });
         res.json(brands);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching brands', error: error.message });
-    }
-};
-
-exports.getSubscriptions = async (req, res) => {
-    try {
-        const { status } = req.query;
-        const normalizedStatus = status ? status.toUpperCase() : undefined;
-        const whereCondition = normalizedStatus && ['ACTIVE', 'PAUSED', 'EXPIRED'].includes(normalizedStatus)
-            ? { status: normalizedStatus }
-            : {};
-
-        const subscriptions = await prisma.subscription.findMany({
-            where: whereCondition,
-            include: {
-                Brand: {
-                    include: {
-                        Vendor: {
-                            include: {
-                                User: { select: { id: true, email: true, username: true } }
-                            }
-                        }
-                    }
-                }
-            },
-            orderBy: { updatedAt: 'desc' }
-        });
-
-        res.json(subscriptions);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching subscriptions', error: error.message });
-    }
-};
-
-exports.updateVendorSubscription = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status, extendMonths, subscriptionType, startDate } = req.body;
-
-        const vendor = await prisma.vendor.findUnique({
-            where: { id },
-            include: {
-                Brand: {
-                    include: {
-                        Subscription: true
-                    }
-                }
-            }
-        });
-
-        if (!vendor || !vendor.Brand) {
-            return res.status(404).json({ message: 'Vendor or brand not found' });
-        }
-
-        let subscription = vendor.Brand.Subscription;
-        if (!subscription) {
-            const initialType = normalizeSubscriptionType(subscriptionType || 'MONTHS_12');
-            const window = calculateSubscriptionWindow(initialType, startDate || new Date());
-            subscription = await prisma.subscription.create({
-                data: {
-                    brandId: vendor.Brand.id,
-                    subscriptionType: initialType,
-                    startDate: window.startDate,
-                    endDate: window.endDate,
-                    status: 'ACTIVE'
-                }
-            });
-        }
-        const updatePayload = {};
-
-        if (subscriptionType) {
-            const normalizedType = normalizeSubscriptionType(subscriptionType);
-            const window = calculateSubscriptionWindow(normalizedType, startDate || new Date());
-            updatePayload.subscriptionType = normalizedType;
-            updatePayload.startDate = window.startDate;
-            updatePayload.endDate = window.endDate;
-            updatePayload.status = 'ACTIVE';
-        }
-
-        if (extendMonths) {
-            const months = Number(extendMonths);
-            if (!Number.isFinite(months) || months <= 0) {
-                return res.status(400).json({ message: 'extendMonths must be a positive number' });
-            }
-
-            const referenceDate = subscription.endDate && new Date(subscription.endDate) > new Date()
-                ? new Date(subscription.endDate)
-                : new Date();
-            const newEnd = new Date(referenceDate);
-            newEnd.setMonth(newEnd.getMonth() + months);
-
-            updatePayload.endDate = newEnd;
-            updatePayload.status = updatePayload.status || 'ACTIVE';
-            if (!updatePayload.startDate) {
-                updatePayload.startDate = subscription.startDate || new Date();
-            }
-        }
-
-        if (status) {
-            const upperStatus = status.toUpperCase();
-            if (!['ACTIVE', 'PAUSED', 'EXPIRED'].includes(upperStatus)) {
-                return res.status(400).json({ message: 'Invalid subscription status' });
-            }
-            updatePayload.status = upperStatus;
-        }
-
-        if (Object.keys(updatePayload).length === 0) {
-            return res.status(400).json({ message: 'No updates provided for subscription' });
-        }
-
-        const updatedSubscription = await prisma.subscription.update({
-            where: { id: subscription.id },
-            data: updatePayload
-        });
-
-        const vendorStatusUpdate = {};
-        if (updatePayload.status === 'ACTIVE') vendorStatusUpdate.status = 'active';
-        if (updatePayload.status === 'PAUSED') vendorStatusUpdate.status = 'paused';
-        if (updatePayload.status === 'EXPIRED') vendorStatusUpdate.status = 'expired';
-
-        if (Object.keys(vendorStatusUpdate).length) {
-            await prisma.vendor.update({
-                where: { id: vendor.id },
-                data: vendorStatusUpdate
-            });
-        }
-
-        safeLogActivity({
-            actorUserId: req.user?.id,
-            actorRole: req.user?.role,
-            vendorId: vendor.id,
-            brandId: vendor.Brand?.id,
-            action: 'subscription_update',
-            entityType: 'subscription',
-            entityId: subscription.id,
-            metadata: {
-                status: updatePayload.status || subscription.status,
-                subscriptionType: updatePayload.subscriptionType || subscription.subscriptionType,
-                endDate: updatePayload.endDate || subscription.endDate
-            },
-            req
-        });
-
-        res.json({ message: 'Subscription updated', subscription: updatedSubscription });
-    } catch (error) {
-        res.status(500).json({ message: 'Failed to update subscription', error: error.message });
     }
 };
 
@@ -591,11 +431,7 @@ exports.getAllVendors = async (req, res) => {
                 include: {
                     User: true,
                     Wallet: true,
-                    Brand: {
-                        include: {
-                            Subscription: true
-                        }
-                    }
+                    Brand: true
                 },
                 skip,
                 take: limit,
@@ -1944,7 +1780,7 @@ exports.getVendorDetails = async (req, res) => {
             include: {
                 User: { select: { name: true, email: true, phoneNumber: true } },
                 Wallet: true,
-                Brand: { include: { Campaigns: true, Subscription: true } }
+                Brand: { include: { Campaigns: true } }
             }
         });
         if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
@@ -2213,7 +2049,7 @@ exports.getVendorOverview = async (req, res) => {
             include: {
                 User: { select: { id: true, name: true, email: true, phoneNumber: true, username: true } },
                 Wallet: true,
-                Brand: { include: { Subscription: true } }
+                Brand: true
             }
         });
 
@@ -2246,7 +2082,6 @@ exports.getVendorOverview = async (req, res) => {
             vendor,
             brand: vendor.Brand || null,
             wallet: vendor.Wallet || null,
-            subscription: vendor.Brand?.Subscription || null,
             campaigns,
             metrics: {
                 campaigns: campaigns.length,
@@ -2522,7 +2357,6 @@ exports.getBrandOverview = async (req, res) => {
                         Wallet: true
                     }
                 },
-                Subscription: true,
                 Campaigns: { orderBy: { createdAt: 'desc' } }
             }
         });
@@ -2548,7 +2382,6 @@ exports.getBrandOverview = async (req, res) => {
         res.json({
             brand,
             vendor: brand.Vendor || null,
-            subscription: brand.Subscription || null,
             campaigns: brand.Campaigns || [],
             metrics: {
                 campaigns: brand.Campaigns?.length || 0,
