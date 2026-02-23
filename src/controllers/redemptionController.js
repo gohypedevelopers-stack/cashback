@@ -296,6 +296,8 @@ exports.scanAndRedeem = async (req, res) => {
                 vendorId: qr.vendorId,
                 campaignId: qr.campaignId,
                 brandId: qr.Campaign?.brandId,
+                brandLogo: qr.Campaign?.Brand?.logoUrl,
+                productId: qr.Campaign?.productId,
                 walletBalance: Number(wallet.balance || 0)
             };
         });
@@ -359,6 +361,8 @@ exports.scanAndRedeem = async (req, res) => {
             walletBalance: result.walletBalance,
             campaign: result.campaign?.title,
             brand: result.campaign?.Brand?.name,
+            brandLogo: result.brandLogo,
+            productId: result.productId,
             endDate: result.campaign?.endDate
         });
     } catch (error) {
@@ -415,7 +419,9 @@ exports.verifyQR = async (req, res) => {
             valid: true,
             amount,
             brand: qr.Campaign.Brand?.name,
+            brandLogo: qr.Campaign.Brand?.logoUrl,
             campaign: qr.Campaign.title,
+            productId: qr.Campaign.productId,
             endDate: qr.Campaign.endDate,
             status: qr.status
         });
