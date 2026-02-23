@@ -358,7 +358,8 @@ exports.scanAndRedeem = async (req, res) => {
             payoutTo: result.payoutTo,
             walletBalance: result.walletBalance,
             campaign: result.campaign?.title,
-            brand: result.campaign?.Brand?.name
+            brand: result.campaign?.Brand?.name,
+            endDate: result.campaign?.endDate
         });
     } catch (error) {
         res.status(error.status || 500).json({
@@ -415,6 +416,7 @@ exports.verifyQR = async (req, res) => {
             amount,
             brand: qr.Campaign.Brand?.name,
             campaign: qr.Campaign.title,
+            endDate: qr.Campaign.endDate,
             status: qr.status
         });
     } catch (error) {
