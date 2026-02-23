@@ -151,7 +151,10 @@ exports.scanAndRedeem = async (req, res) => {
                     capturedAt: location.capturedAt
                 }
             });
-            return res.status(validationError.status || 400).json({ message: validationError.message });
+            return res.status(validationError.status || 400).json({ 
+                message: validationError.message,
+                qr: previewQr
+            });
         }
 
         const result = await prisma.$transaction(async (tx) => {
@@ -392,7 +395,7 @@ exports.verifyQR = async (req, res) => {
 
         const now = new Date();
         if (now < new Date(qr.Campaign.startDate) || now > new Date(qr.Campaign.endDate)) {
-            return res.status(400).json({ message: 'Campaign expired or not started' });
+            return res.status(400).json({ message: 'Campaign expired or not started', qr });
         }
 
         const amount = toPositiveAmount(qr.cashbackAmount) || toPositiveAmount(qr.Campaign.cashbackAmount) || 0;
