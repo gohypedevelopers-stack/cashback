@@ -46,6 +46,15 @@ app.use('/api/upload', uploadRoutes); // New Route
 app.use('/api/wallet', walletRoutes); // Wallet & Payout Routes
 app.use('/api/claim', claimRoutes); // Claim QR routes
 
+// Error Handling Middleware
+app.use((err, req, res, next) => {
+    console.error('GLOBAL ERROR:', err);
+    res.status(err.status || 500).json({
+        message: err.message || 'Internal Server Error',
+        error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+});
+
 app.get('/', (req, res) => {
     res.send('Coupon Cashback API is running...');
 });
