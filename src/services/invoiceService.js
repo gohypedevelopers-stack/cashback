@@ -330,8 +330,11 @@ const renderInvoiceToBuffer = (invoice) => {
 
         // Tax (show GST % if available)
         const taxY = summaryStartY + rowH;
-        const itemTaxRate = items.find(i => i.taxRate > 0)?.taxRate;
-        const taxLabel = itemTaxRate ? `GST @ ${itemTaxRate}%` : 'Tax/GST';
+        const itemTaxRate = toNumber(
+            items.find((item) => toNumber(item?.taxRate, 0) > 0)?.taxRate,
+            0
+        );
+        const taxLabel = itemTaxRate > 0 ? `GST @ ${itemTaxRate}%` : 'Tax/GST';
         doc.rect(summaryX, taxY, summaryW, rowH).fill(WHITE);
         doc.fillColor(GRAY).fontSize(9).font('Helvetica')
             .text(taxLabel, summaryX + 10, taxY + 5, { width: 100 });

@@ -42,6 +42,31 @@ const LEGACY_BILLABLE_CATEGORIES = [
     'recharge'
 ];
 
+const isEnumInputError = (error) => {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        message.includes('invalid input value for enum') ||
+        message.includes('enum') && message.includes('invalid input')
+    );
+};
+
+const getSupportedLegacyBillableCategories = async (tx) => {
+    try {
+        const rows = await tx.$queryRaw`
+            SELECT e.enumlabel
+            FROM pg_enum e
+            JOIN pg_type t ON t.oid = e.enumtypid
+            WHERE t.typname = 'TransactionCategory'
+        `;
+        const available = new Set((rows || []).map((row) => String(row.enumlabel || '').trim()));
+        const supported = LEGACY_BILLABLE_CATEGORIES.filter((value) => available.has(value));
+        return supported;
+    } catch (error) {
+        // If enum introspection fails, use the static list and let the guarded query handle retries.
+        return [...LEGACY_BILLABLE_CATEGORIES];
+    }
+};
+
 // Helper to generate unique hash
 const generateQRHash = () => {
     return crypto.randomBytes(32).toString('hex');
@@ -415,19 +440,31 @@ const backfillLegacyInvoicesForVendor = async (tx, vendorId) => {
     });
 
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const transactions = await tx.transaction.findMany({
-        where: {
-            walletId: wallet.id,
-            invoiceId: null,
-            status: 'success',
-            createdAt: { lt: tenMinutesAgo },
-            category: {
-                in: LEGACY_BILLABLE_CATEGORIES
-            }
-        },
-        orderBy: { createdAt: 'asc' },
-        take: 5000
-    });
+    const categories = await getSupportedLegacyBillableCategories(tx);
+    if (!categories.length) return 0;
+
+    let transactions = [];
+    try {
+        transactions = await tx.transaction.findMany({
+            where: {
+                walletId: wallet.id,
+                invoiceId: null,
+                status: 'success',
+                createdAt: { lt: tenMinutesAgo },
+                category: {
+                    in: categories
+                }
+            },
+            orderBy: { createdAt: 'asc' },
+            take: 5000
+        });
+    } catch (error) {
+        if (isEnumInputError(error)) {
+            console.error('[Invoices] Legacy backfill skipped due enum mismatch:', error.message);
+            return 0;
+        }
+        throw error;
+    }
 
     if (transactions.length > 0) {
         logInvoiceCreation('backfillLegacyInvoicesForVendor', { count: transactions.length, vendorId });
@@ -3255,6 +3292,31 @@ exports.assignSheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Sheet cashback assignment is only available for postpaid campaigns' });
         }
 
+        const priorSheetLocks = await prisma.transaction.findMany({
+            where: {
+                referenceId: campaignId,
+                category: 'lock_funds',
+                status: 'success'
+            },
+            select: {
+                amount: true,
+                metadata: true
+            }
+        });
+
+        const isAlreadyPaidSheet = priorSheetLocks.some((sheetTx) => {
+            const sheetIdx = Number.parseInt(sheetTx?.metadata?.sheetIndex, 10);
+            if (!Number.isFinite(sheetIdx) || sheetIdx < 0) return false;
+            if (sheetIdx !== parsedSheet) return false;
+            return toNumber(sheetTx?.amount, 0) > 0;
+        });
+
+        if (isAlreadyPaidSheet) {
+            return res.status(400).json({
+                message: 'Sheet already paid. Cashback can be assigned only once per sheet.'
+            });
+        }
+
         // Get all campaign QRs ordered by creation to determine sheet position
         const allQrs = await prisma.qRCode.findMany({
             where: {
@@ -3449,6 +3511,27 @@ exports.paySheetCashback = async (req, res) => {
                     0
                 );
             });
+
+            if (prevCashbackAmount > 0) {
+                const aggregate = await tx.qRCode.aggregate({
+                    where: { campaignId },
+                    _sum: { cashbackAmount: true }
+                });
+                const totalCashback = Number(aggregate._sum.cashbackAmount || 0);
+
+                return {
+                    totalPaid: 0,
+                    sheetQrCount,
+                    techFeeTotal: 0,
+                    voucherFeeTotal: 0,
+                    cashbackTotal: 0,
+                    campaignTotalBudget: totalCashback,
+                    campaignTitle: campaign.title,
+                    invoice: existingInvoice,
+                    invoiceId: existingInvoice?.id,
+                    message: 'Sheet already paid. Recharge is allowed only once per sheet.'
+                };
+            }
 
             const priorFeeCharges = await tx.transaction.findMany({
                 where: {
@@ -4831,9 +4914,13 @@ exports.exportVendorWalletTransactions = async (req, res) => {
 exports.getVendorInvoices = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        await prisma.$transaction(async (tx) => {
-            await backfillLegacyInvoicesForVendor(tx, vendor.id);
-        });
+        try {
+            await prisma.$transaction(async (tx) => {
+                await backfillLegacyInvoicesForVendor(tx, vendor.id);
+            });
+        } catch (backfillError) {
+            console.error('[Invoices] Backfill failed but continuing invoice fetch:', backfillError.message);
+        }
         const { page, limit, skip } = parsePagination(req, { defaultLimit: 25, maxLimit: 100 });
         const where = { vendorId: vendor.id };
         if (req.query.invoiceNo) {
@@ -4877,27 +4964,177 @@ exports.getVendorInvoices = async (req, res) => {
     }
 };
 
+const isMissingColumnError = (error) => {
+    if (!error) return false;
+    const message = String(error.message || '');
+    return (
+        error.code === 'P2022' ||
+        message.includes('ColumnNotFound') ||
+        message.includes('does not exist in the current database')
+    );
+};
+
+const sanitizeDownloadFileStem = (value, fallback = 'invoice') => {
+    const cleaned = String(value || '')
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .replace(/\.+$/g, '')
+        .trim();
+    const safe = cleaned || fallback;
+    return safe.slice(0, 120);
+};
+
+const buildInvoicePdfPayload = async (invoiceId, vendorId) => {
+    const baseWhere = { id: invoiceId, vendorId };
+
+    try {
+        return await prisma.invoice.findFirst({
+            where: baseWhere,
+            select: {
+                id: true,
+                number: true,
+                type: true,
+                subtotal: true,
+                tax: true,
+                total: true,
+                issuedAt: true,
+                vendorId: true,
+                brandId: true,
+                Items: {
+                    select: {
+                        id: true,
+                        label: true,
+                        qty: true,
+                        unitPrice: true,
+                        amount: true,
+                        hsnSac: true,
+                        taxRate: true
+                    },
+                    orderBy: { createdAt: 'asc' }
+                },
+                Vendor: {
+                    select: {
+                        businessName: true,
+                        contactPhone: true,
+                        contactEmail: true
+                    }
+                },
+                Brand: {
+                    select: {
+                        id: true,
+                        name: true
+                    }
+                }
+            }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Primary query failed, trying fallback:', error.message);
+    }
+
+    const baseInvoice = await prisma.invoice.findFirst({
+        where: baseWhere,
+        select: {
+            id: true,
+            number: true,
+            type: true,
+            subtotal: true,
+            tax: true,
+            total: true,
+            issuedAt: true,
+            vendorId: true,
+            brandId: true
+        }
+    });
+
+    if (!baseInvoice) {
+        return null;
+    }
+
+    let items = [];
+    try {
+        items = await prisma.invoiceItem.findMany({
+            where: { invoiceId: baseInvoice.id },
+            select: {
+                id: true,
+                label: true,
+                qty: true,
+                unitPrice: true,
+                amount: true,
+                hsnSac: true,
+                taxRate: true
+            },
+            orderBy: { createdAt: 'asc' }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Invoice items fallback query failed:', error.message);
+    }
+
+    let vendor = null;
+    try {
+        vendor = await prisma.vendor.findUnique({
+            where: { id: baseInvoice.vendorId },
+            select: {
+                businessName: true,
+                contactPhone: true,
+                contactEmail: true
+            }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Vendor fallback query failed, trying minimal vendor fields:', error.message);
+        vendor = await prisma.vendor.findUnique({
+            where: { id: baseInvoice.vendorId },
+            select: {
+                businessName: true,
+                contactPhone: true
+            }
+        });
+    }
+
+    let brand = null;
+    if (baseInvoice.brandId) {
+        try {
+            brand = await prisma.brand.findUnique({
+                where: { id: baseInvoice.brandId },
+                select: {
+                    id: true,
+                    name: true
+                }
+            });
+        } catch (error) {
+            if (!isMissingColumnError(error)) throw error;
+            console.error('[InvoicePDF] Brand fallback query failed:', error.message);
+        }
+    }
+
+    return {
+        ...baseInvoice,
+        Items: items,
+        Vendor: vendor,
+        Brand: brand
+    };
+};
+
 const sendInvoicePdfResponse = async (res, invoice) => {
     const pdfBuffer = await renderInvoiceToBuffer(invoice);
+    const fallbackStem = `invoice-${String(invoice?.id || Date.now()).slice(-8)}`;
+    const safeStem = sanitizeDownloadFileStem(invoice?.number, fallbackStem);
+    const safeFileName = `${safeStem}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=\"${invoice.number}.pdf\"`);
+    res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`
+    );
     res.send(pdfBuffer);
 };
 
 exports.downloadVendorInvoicePdf = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const invoice = await prisma.invoice.findFirst({
-            where: {
-                id: req.params.id,
-                vendorId: vendor.id
-            },
-            include: {
-                Items: true,
-                Vendor: true,
-                Brand: true
-            }
-        });
+        const invoice = await buildInvoicePdfPayload(req.params.id, vendor.id);
 
         if (!invoice) {
             return res.status(404).json({ message: 'Invoice not found' });
@@ -4905,6 +5142,11 @@ exports.downloadVendorInvoicePdf = async (req, res) => {
 
         await sendInvoicePdfResponse(res, invoice);
     } catch (error) {
+        console.error('[InvoicePDF] downloadVendorInvoicePdf failed:', {
+            invoiceId: req.params?.id,
+            userId: req.user?.id,
+            message: error?.message
+        });
         res.status(500).json({ message: 'Failed to download invoice', error: error.message });
     }
 };
