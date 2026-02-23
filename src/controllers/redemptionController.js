@@ -117,6 +117,12 @@ exports.scanAndRedeem = async (req, res) => {
         const userId = req.user.id;
         const location = parseLocationPayload(req.body || {});
 
+        if (!location.lat || !location.lng) {
+            return res.status(400).json({ 
+                message: 'Location access is required for redemption. Please enable location and try again.' 
+            });
+        }
+
         const previewQr = await prisma.qRCode.findUnique({
             where: { uniqueHash: hash },
             include: {
