@@ -42,6 +42,31 @@ const LEGACY_BILLABLE_CATEGORIES = [
     'recharge'
 ];
 
+const isEnumInputError = (error) => {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        message.includes('invalid input value for enum') ||
+        message.includes('enum') && message.includes('invalid input')
+    );
+};
+
+const getSupportedLegacyBillableCategories = async (tx) => {
+    try {
+        const rows = await tx.$queryRaw`
+            SELECT e.enumlabel
+            FROM pg_enum e
+            JOIN pg_type t ON t.oid = e.enumtypid
+            WHERE t.typname = 'TransactionCategory'
+        `;
+        const available = new Set((rows || []).map((row) => String(row.enumlabel || '').trim()));
+        const supported = LEGACY_BILLABLE_CATEGORIES.filter((value) => available.has(value));
+        return supported;
+    } catch (error) {
+        // If enum introspection fails, use the static list and let the guarded query handle retries.
+        return [...LEGACY_BILLABLE_CATEGORIES];
+    }
+};
+
 // Helper to generate unique hash
 const generateQRHash = () => {
     return crypto.randomBytes(32).toString('hex');
@@ -415,19 +440,31 @@ const backfillLegacyInvoicesForVendor = async (tx, vendorId) => {
     });
 
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const transactions = await tx.transaction.findMany({
-        where: {
-            walletId: wallet.id,
-            invoiceId: null,
-            status: 'success',
-            createdAt: { lt: tenMinutesAgo },
-            category: {
-                in: LEGACY_BILLABLE_CATEGORIES
-            }
-        },
-        orderBy: { createdAt: 'asc' },
-        take: 5000
-    });
+    const categories = await getSupportedLegacyBillableCategories(tx);
+    if (!categories.length) return 0;
+
+    let transactions = [];
+    try {
+        transactions = await tx.transaction.findMany({
+            where: {
+                walletId: wallet.id,
+                invoiceId: null,
+                status: 'success',
+                createdAt: { lt: tenMinutesAgo },
+                category: {
+                    in: categories
+                }
+            },
+            orderBy: { createdAt: 'asc' },
+            take: 5000
+        });
+    } catch (error) {
+        if (isEnumInputError(error)) {
+            console.error('[Invoices] Legacy backfill skipped due enum mismatch:', error.message);
+            return 0;
+        }
+        throw error;
+    }
 
     if (transactions.length > 0) {
         logInvoiceCreation('backfillLegacyInvoicesForVendor', { count: transactions.length, vendorId });
@@ -4877,9 +4914,13 @@ exports.exportVendorWalletTransactions = async (req, res) => {
 exports.getVendorInvoices = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        await prisma.$transaction(async (tx) => {
-            await backfillLegacyInvoicesForVendor(tx, vendor.id);
-        });
+        try {
+            await prisma.$transaction(async (tx) => {
+                await backfillLegacyInvoicesForVendor(tx, vendor.id);
+            });
+        } catch (backfillError) {
+            console.error('[Invoices] Backfill failed but continuing invoice fetch:', backfillError.message);
+        }
         const { page, limit, skip } = parsePagination(req, { defaultLimit: 25, maxLimit: 100 });
         const where = { vendorId: vendor.id };
         if (req.query.invoiceNo) {
