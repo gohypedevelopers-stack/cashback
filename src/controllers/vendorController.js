@@ -3255,6 +3255,31 @@ exports.assignSheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Sheet cashback assignment is only available for postpaid campaigns' });
         }
 
+        const priorSheetLocks = await prisma.transaction.findMany({
+            where: {
+                referenceId: campaignId,
+                category: 'lock_funds',
+                status: 'success'
+            },
+            select: {
+                amount: true,
+                metadata: true
+            }
+        });
+
+        const isAlreadyPaidSheet = priorSheetLocks.some((sheetTx) => {
+            const sheetIdx = Number.parseInt(sheetTx?.metadata?.sheetIndex, 10);
+            if (!Number.isFinite(sheetIdx) || sheetIdx < 0) return false;
+            if (sheetIdx !== parsedSheet) return false;
+            return toNumber(sheetTx?.amount, 0) > 0;
+        });
+
+        if (isAlreadyPaidSheet) {
+            return res.status(400).json({
+                message: 'Sheet already paid. Cashback can be assigned only once per sheet.'
+            });
+        }
+
         // Get all campaign QRs ordered by creation to determine sheet position
         const allQrs = await prisma.qRCode.findMany({
             where: {
@@ -3449,6 +3474,27 @@ exports.paySheetCashback = async (req, res) => {
                     0
                 );
             });
+
+            if (prevCashbackAmount > 0) {
+                const aggregate = await tx.qRCode.aggregate({
+                    where: { campaignId },
+                    _sum: { cashbackAmount: true }
+                });
+                const totalCashback = Number(aggregate._sum.cashbackAmount || 0);
+
+                return {
+                    totalPaid: 0,
+                    sheetQrCount,
+                    techFeeTotal: 0,
+                    voucherFeeTotal: 0,
+                    cashbackTotal: 0,
+                    campaignTotalBudget: totalCashback,
+                    campaignTitle: campaign.title,
+                    invoice: existingInvoice,
+                    invoiceId: existingInvoice?.id,
+                    message: 'Sheet already paid. Recharge is allowed only once per sheet.'
+                };
+            }
 
             const priorFeeCharges = await tx.transaction.findMany({
                 where: {
