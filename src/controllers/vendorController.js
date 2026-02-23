@@ -4923,27 +4923,177 @@ exports.getVendorInvoices = async (req, res) => {
     }
 };
 
+const isMissingColumnError = (error) => {
+    if (!error) return false;
+    const message = String(error.message || '');
+    return (
+        error.code === 'P2022' ||
+        message.includes('ColumnNotFound') ||
+        message.includes('does not exist in the current database')
+    );
+};
+
+const sanitizeDownloadFileStem = (value, fallback = 'invoice') => {
+    const cleaned = String(value || '')
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .replace(/\.+$/g, '')
+        .trim();
+    const safe = cleaned || fallback;
+    return safe.slice(0, 120);
+};
+
+const buildInvoicePdfPayload = async (invoiceId, vendorId) => {
+    const baseWhere = { id: invoiceId, vendorId };
+
+    try {
+        return await prisma.invoice.findFirst({
+            where: baseWhere,
+            select: {
+                id: true,
+                number: true,
+                type: true,
+                subtotal: true,
+                tax: true,
+                total: true,
+                issuedAt: true,
+                vendorId: true,
+                brandId: true,
+                Items: {
+                    select: {
+                        id: true,
+                        label: true,
+                        qty: true,
+                        unitPrice: true,
+                        amount: true,
+                        hsnSac: true,
+                        taxRate: true
+                    },
+                    orderBy: { createdAt: 'asc' }
+                },
+                Vendor: {
+                    select: {
+                        businessName: true,
+                        contactPhone: true,
+                        contactEmail: true
+                    }
+                },
+                Brand: {
+                    select: {
+                        id: true,
+                        name: true
+                    }
+                }
+            }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Primary query failed, trying fallback:', error.message);
+    }
+
+    const baseInvoice = await prisma.invoice.findFirst({
+        where: baseWhere,
+        select: {
+            id: true,
+            number: true,
+            type: true,
+            subtotal: true,
+            tax: true,
+            total: true,
+            issuedAt: true,
+            vendorId: true,
+            brandId: true
+        }
+    });
+
+    if (!baseInvoice) {
+        return null;
+    }
+
+    let items = [];
+    try {
+        items = await prisma.invoiceItem.findMany({
+            where: { invoiceId: baseInvoice.id },
+            select: {
+                id: true,
+                label: true,
+                qty: true,
+                unitPrice: true,
+                amount: true,
+                hsnSac: true,
+                taxRate: true
+            },
+            orderBy: { createdAt: 'asc' }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Invoice items fallback query failed:', error.message);
+    }
+
+    let vendor = null;
+    try {
+        vendor = await prisma.vendor.findUnique({
+            where: { id: baseInvoice.vendorId },
+            select: {
+                businessName: true,
+                contactPhone: true,
+                contactEmail: true
+            }
+        });
+    } catch (error) {
+        if (!isMissingColumnError(error)) throw error;
+        console.error('[InvoicePDF] Vendor fallback query failed, trying minimal vendor fields:', error.message);
+        vendor = await prisma.vendor.findUnique({
+            where: { id: baseInvoice.vendorId },
+            select: {
+                businessName: true,
+                contactPhone: true
+            }
+        });
+    }
+
+    let brand = null;
+    if (baseInvoice.brandId) {
+        try {
+            brand = await prisma.brand.findUnique({
+                where: { id: baseInvoice.brandId },
+                select: {
+                    id: true,
+                    name: true
+                }
+            });
+        } catch (error) {
+            if (!isMissingColumnError(error)) throw error;
+            console.error('[InvoicePDF] Brand fallback query failed:', error.message);
+        }
+    }
+
+    return {
+        ...baseInvoice,
+        Items: items,
+        Vendor: vendor,
+        Brand: brand
+    };
+};
+
 const sendInvoicePdfResponse = async (res, invoice) => {
     const pdfBuffer = await renderInvoiceToBuffer(invoice);
+    const fallbackStem = `invoice-${String(invoice?.id || Date.now()).slice(-8)}`;
+    const safeStem = sanitizeDownloadFileStem(invoice?.number, fallbackStem);
+    const safeFileName = `${safeStem}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=\"${invoice.number}.pdf\"`);
+    res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`
+    );
     res.send(pdfBuffer);
 };
 
 exports.downloadVendorInvoicePdf = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const invoice = await prisma.invoice.findFirst({
-            where: {
-                id: req.params.id,
-                vendorId: vendor.id
-            },
-            include: {
-                Items: true,
-                Vendor: true,
-                Brand: true
-            }
-        });
+        const invoice = await buildInvoicePdfPayload(req.params.id, vendor.id);
 
         if (!invoice) {
             return res.status(404).json({ message: 'Invoice not found' });
@@ -4951,6 +5101,11 @@ exports.downloadVendorInvoicePdf = async (req, res) => {
 
         await sendInvoicePdfResponse(res, invoice);
     } catch (error) {
+        console.error('[InvoicePDF] downloadVendorInvoicePdf failed:', {
+            invoiceId: req.params?.id,
+            userId: req.user?.id,
+            message: error?.message
+        });
         res.status(500).json({ message: 'Failed to download invoice', error: error.message });
     }
 };
