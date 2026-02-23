@@ -2412,8 +2412,13 @@ exports.updateBrandDetails = async (req, res) => {
         if (name !== undefined) data.name = name;
         if (logoUrl !== undefined) data.logoUrl = logoUrl;
         if (website !== undefined) data.website = website;
-        if (req.body.defaultPlanType !== undefined) {
-            const plan = req.body.defaultPlanType;
+        const incomingPlanType =
+            req.body.defaultPlanType !== undefined
+                ? req.body.defaultPlanType
+                : req.body.planType;
+
+        if (incomingPlanType !== undefined) {
+            const plan = incomingPlanType;
             if (['prepaid', 'postpaid'].includes(plan)) {
                 data.defaultPlanType = plan;
             } else {
