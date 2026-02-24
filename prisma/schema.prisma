@@ -76,6 +76,8 @@ model Brand {
   vendorId        String?       @unique
   rejectionReason    String?
   defaultPlanType    PlanType      @default(prepaid)
+  about           String?
+  faqs            Json?
   ActivityLog     ActivityLog[]
   Invoices        Invoice[]
   Vendor          Vendor?       @relation(fields: [vendorId], references: [id])

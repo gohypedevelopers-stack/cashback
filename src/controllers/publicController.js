@@ -272,7 +272,12 @@ exports.getBrandDetails = async (req, res) => {
             banner: brand.logoUrl,
             website: brand.website,
             email: brand.Vendor?.User?.email || 'contact@brand.com',
-            about: 'Trusted Brand Partner of GoHype.',
+            about: brand.about || 'Trusted Brand Partner of GoHype.',
+            faqs: Array.isArray(brand.faqs) ? brand.faqs : [
+                { id: 'f1', question: "How to earn cashback?", answer: "Scan the QR code on the product and follow the instructions to claim your reward instantly." },
+                { id: 'f2', question: "Where to see my earnings?", answer: "Go to your Profile and check the Wallet section to see all pending and approved cashback." },
+                { id: 'f3', question: "How to withdraw?", answer: "Once your reward is approved, you can withdraw it to your UPI or bank account from the Wallet." }
+            ],
             tags: ['Verified', 'Premium'],
             products: brand.Products.map((p) => {
                 const linkedCampaign = productCampaignMap.get(p.id) || fallbackCampaign;
