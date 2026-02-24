@@ -2399,7 +2399,7 @@ exports.getBrandOverview = async (req, res) => {
 exports.updateBrandDetails = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, logoUrl, website, qrPricePerUnit } = req.body;
+        const { name, logoUrl, website, qrPricePerUnit, about, faqs } = req.body;
         const existingBrand = await prisma.brand.findUnique({
             where: { id },
             select: { id: true, vendorId: true, qrPricePerUnit: true }
@@ -2412,6 +2412,8 @@ exports.updateBrandDetails = async (req, res) => {
         if (name !== undefined) data.name = name;
         if (logoUrl !== undefined) data.logoUrl = logoUrl;
         if (website !== undefined) data.website = website;
+        if (about !== undefined) data.about = about;
+        if (faqs !== undefined) data.faqs = faqs;
         const incomingPlanType =
             req.body.defaultPlanType !== undefined
                 ? req.body.defaultPlanType
