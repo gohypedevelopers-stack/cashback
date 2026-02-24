@@ -728,7 +728,7 @@ const fundInventoryQrs = async (req, res) => {
 
             // Consolidate everything into one FEE_TAX_INVOICE
             const invoiceItems = [];
-            
+
             // 1. Cashback Deposit (Asset)
             if (cashbackTotal > 0) {
                 invoiceItems.push({
@@ -1230,9 +1230,9 @@ exports.getVendorCampaigns = async (req, res) => {
             console.log(`getVendorCampaigns: Processing campaign ${camp.id} (${camp.planType}/${camp.status})`);
             if (camp.planType === 'postpaid' && camp.status === 'active') {
                 const qrs = await prisma.qRCode.findMany({
-                    where: { 
-                        campaignId: camp.id, 
-                        status: { in: ['funded', 'generated', 'active', 'assigned'] } 
+                    where: {
+                        campaignId: camp.id,
+                        status: { in: ['funded', 'generated', 'active', 'assigned'] }
                     },
                     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
                     select: { cashbackAmount: true }
@@ -1240,20 +1240,20 @@ exports.getVendorCampaigns = async (req, res) => {
 
                 const sheets = [];
                 const QRS_PER_SHEET = 25;
-                const toRomanSheet = (n) => { const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I']; let r='',x=Math.max(1,Math.floor(n)); for(let i=0;i<v.length;i++){while(x>=v[i]){r+=s[i];x-=v[i];}} return r; };
+                const toRomanSheet = (n) => { const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']; let r = '', x = Math.max(1, Math.floor(n)); for (let i = 0; i < v.length; i++) { while (x >= v[i]) { r += s[i]; x -= v[i]; } } return r; };
 
                 for (let i = 0; i < qrs.length; i += QRS_PER_SHEET) {
-                   const chunk = qrs.slice(i, i + QRS_PER_SHEET);
-                   const amount = Number(chunk[0]?.cashbackAmount || 0);
-                   const sheetIndex = i / QRS_PER_SHEET;
-                   const label = toRomanSheet(sheetIndex + 1);
-                   
-                   sheets.push({
+                    const chunk = qrs.slice(i, i + QRS_PER_SHEET);
+                    const amount = Number(chunk[0]?.cashbackAmount || 0);
+                    const sheetIndex = i / QRS_PER_SHEET;
+                    const label = toRomanSheet(sheetIndex + 1);
+
+                    sheets.push({
                         index: sheetIndex,
                         label,
                         count: chunk.length,
                         amount
-                   });
+                    });
                 }
 
                 // IMPORTANT: show only PAID sheet amounts in active postpaid view.
@@ -1296,8 +1296,8 @@ exports.getVendorCampaigns = async (req, res) => {
                     paidSheets.reduce((sum, s) => sum + toNumber(s.paidTotal, 0), 0),
                     0
                 );
-                return { 
-                    ...camp, 
+                return {
+                    ...camp,
                     sheets: paidSheets,
                     subtotal: totalBudgetFromSheets,
                     totalBudget: totalBudgetFromSheets
@@ -2629,7 +2629,7 @@ exports.payOrder = async (req, res) => {
 
             // Consolidate everything into one FEE_TAX_INVOICE
             const invoiceItems = [];
-            
+
             // 1. Cashback Deposit
             if (cashbackTotal > 0) {
                 invoiceItems.push({
@@ -2900,7 +2900,7 @@ exports.payCampaign = async (req, res) => {
 
             // Consolidate everything into one FEE_TAX_INVOICE
             const invoiceItems = [];
-            
+
             // 1. Cashback Deposit (if any)
             if (cashbackTotal > 0) {
                 invoiceItems.push({
@@ -3356,7 +3356,7 @@ exports.assignSheetCashback = async (req, res) => {
             }
         });
 
-        const toRomanLabel = (n) => { const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I']; let r='',x=Math.max(1,Math.floor(n)); for(let i=0;i<v.length;i++){while(x>=v[i]){r+=s[i];x-=v[i];}} return r; };
+        const toRomanLabel = (n) => { const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']; let r = '', x = Math.max(1, Math.floor(n)); for (let i = 0; i < v.length; i++) { while (x >= v[i]) { r += s[i]; x -= v[i]; } } return r; };
         const sheetLabel = toRomanLabel(parsedSheet + 1);
 
         res.json({
@@ -3425,7 +3425,7 @@ exports.paySheetCashback = async (req, res) => {
                 brand: campaign.Brand
             });
             const campaignTechFeeSubtotal = toNumber(printCostPerQr * allQrsCount, 0);
-            
+
             // 3. Voucher Fee — Charged for TOTAL campaign volume differentially
             const VOUCHER_FEE_MAP = { digital_voucher: 0.20, printed_qr: 0.50, none: 0 };
             const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[campaign.voucherType] || 0, 0);
@@ -3438,20 +3438,20 @@ exports.paySheetCashback = async (req, res) => {
 
             // Ensure budget exists
             let campaignBudget = await tx.campaignBudget.findFirst({
-                 where: { campaignId, status: 'active' }
+                where: { campaignId, status: 'active' }
             });
 
             if (!campaignBudget) {
-                 campaignBudget = await tx.campaignBudget.create({
-                     data: {
-                         campaignId,
-                         vendorId: vendor.id,
-                         initialLockedAmount: 0,
-                         lockedAmount: 0,
-                         spentAmount: 0,
-                         status: 'active'
-                     }
-                 });
+                campaignBudget = await tx.campaignBudget.create({
+                    data: {
+                        campaignId,
+                        vendorId: vendor.id,
+                        initialLockedAmount: 0,
+                        lockedAmount: 0,
+                        spentAmount: 0,
+                        status: 'active'
+                    }
+                });
             }
 
             // --- CHECK EXISTING INVOICE FOR PRIOR PAYMENTS ---
@@ -3554,14 +3554,14 @@ exports.paySheetCashback = async (req, res) => {
                 0,
                 toNumber(newCashbackTotal - prevCashbackAmount, 0)
             );
-            
+
             const feesDiffTotal = Math.max(
                 0,
                 toNumber(campaignFeesTotal - prevFeesPaidTotal, 0)
             );
 
             const totalToPay = toNumber(cashbackDiff + feesDiffTotal, 0);
-            
+
             // Ensure we have the current campaign budget state for return objects
             const initialAggregate = await tx.qRCode.aggregate({
                 where: { campaignId },
@@ -3570,12 +3570,12 @@ exports.paySheetCashback = async (req, res) => {
             const totalCashback = Number(initialAggregate._sum.cashbackAmount || 0);
 
             if (totalToPay <= 0) {
-                return { 
-                    totalPaid: 0, 
-                    sheetQrCount, 
-                    techFeeTotal: 0, 
-                    voucherFeeTotal: 0, 
-                    cashbackTotal: 0, 
+                return {
+                    totalPaid: 0,
+                    sheetQrCount,
+                    techFeeTotal: 0,
+                    voucherFeeTotal: 0,
+                    cashbackTotal: 0,
                     campaignTotalBudget: totalCashback,
                     campaignTitle: campaign.title,
                     invoice: existingInvoice,
@@ -3770,7 +3770,7 @@ exports.paySheetCashback = async (req, res) => {
                 // Update budget total
                 await tx.campaignBudget.update({
                     where: { id: campaignBudget.id },
-                    data: { 
+                    data: {
                         lockedAmount: { increment: cashbackDiff },
                         initialLockedAmount: { increment: cashbackDiff }
                     }
@@ -3792,12 +3792,12 @@ exports.paySheetCashback = async (req, res) => {
                 }
             });
 
-            return { 
-                totalPaid: totalToPay, 
-                sheetQrCount, 
+            return {
+                totalPaid: totalToPay,
+                sheetQrCount,
                 techFeeTotal: feesDiffTotal,
-                voucherFeeTotal: 0, 
-                cashbackTotal: cashbackDiff, 
+                voucherFeeTotal: 0,
+                cashbackTotal: cashbackDiff,
                 campaignTotalBudget: finalTotalCashback,
                 campaignTitle: campaign.title,
                 invoice: existingInvoice,
@@ -3839,9 +3839,9 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const hasRequestedSheet =
             Number.isFinite(parsedSheetIndex) && parsedSheetIndex >= 0;
         const sheetLabelFor = (index) => {
-            const v=[1000,900,500,400,100,90,50,40,10,9,5,4,1], s=['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I'];
-            let r='', n=Math.max(1,Math.floor(index+1));
-            for(let i=0;i<v.length;i++){while(n>=v[i]){r+=s[i];n-=v[i];}}
+            const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I'];
+            let r = '', n = Math.max(1, Math.floor(index + 1));
+            for (let i = 0; i < v.length; i++) { while (n >= v[i]) { r += s[i]; n -= v[i]; } }
             return r;
         };
 
@@ -3930,7 +3930,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                     ? `No QR codes found for Sheet ${sheetLabelFor(parsedSheetIndex)}.`
                     : hasChunkedWindow
                         ? 'No QR codes found for this download chunk.'
-                    : 'No funded QRs found for this campaign. Recharge inventory first, then download.'
+                        : 'No funded QRs found for this campaign. Recharge inventory first, then download.'
             });
         }
         const normalizedQrCodes = Array.isArray(qrCodes) ? qrCodes.map((item) => ({ ...item })) : [];
@@ -4039,7 +4039,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                 ? chunkTotalParts
                     ? `QR_Campaign_${campaignId.slice(-8)}_Part_${chunkPartNumber}_of_${chunkTotalParts}_${Date.now()}.pdf`
                     : `QR_Campaign_${campaignId.slice(-8)}_Part_${chunkPartNumber}_${Date.now()}.pdf`
-            : `QR_Campaign_${campaignId.slice(-8)}_${Date.now()}.pdf`;
+                : `QR_Campaign_${campaignId.slice(-8)}_${Date.now()}.pdf`;
         const setupMs = Math.max(0, (marks.campaignLookup || Date.now()) - requestStartedAt);
         const dbMs = Math.max(0, (marks.qrFetch || Date.now()) - (marks.campaignLookup || requestStartedAt));
         const pdfMs = Math.max(0, (marks.pdfReady || Date.now()) - (marks.qrFetch || requestStartedAt));
@@ -4413,8 +4413,8 @@ const mapRedemptionEvent = (event) => {
             : null,
         customer: {
             id: event.userId || null,
-            name: maskedName,
-            phone: maskedPhone
+            name: userName,
+            phone: phone
         }
     };
 };
