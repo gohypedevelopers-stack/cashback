@@ -215,7 +215,7 @@ const generateOTP = () => (
 );
 
 exports.sendOtp = async (req, res) => {
-    const { phoneNumber } = req.body;
+    const { phoneNumber, name, email } = req.body;
 
     if (!phoneNumber) {
         return res.status(400).json({ message: 'Phone number is required' });
@@ -232,19 +232,25 @@ exports.sendOtp = async (req, res) => {
             user = await prisma.user.create({
                 data: {
                     phoneNumber,
+                    name: name || null,
+                    email: email || null,
                     role: 'customer',
                     otp,
                     otpExpires
                 }
             });
         } else {
-            // Update existing user OTP
+            // Update existing user OTP and sync name/email if provided
+            const updateData = {
+                otp,
+                otpExpires
+            };
+            if (name) updateData.name = name;
+            if (email) updateData.email = email;
+
             user = await prisma.user.update({
                 where: { phoneNumber },
-                data: {
-                    otp,
-                    otpExpires
-                }
+                data: updateData
             });
         }
 
@@ -627,9 +633,17 @@ exports.registerVendor = async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: 'Registration successful! Your account is pending admin approval. You will be notified once activated.',
-            vendorId: result.vendor.id,
-            brandId: result.brand.id
+            message: 'Registration successful! Your account is pending admin approval.',
+            _id: result.user.id,
+            name: result.user.name,
+            email: result.user.email,
+            role: result.user.role,
+            token: generateToken(result.user.id, result.user.role),
+            vendor: {
+                vendorId: result.vendor.id,
+                brand: result.brand,
+                status: result.vendor.status
+            }
         });
 
     } catch (error) {
