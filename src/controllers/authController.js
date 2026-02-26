@@ -205,14 +205,8 @@ exports.getMe = async (req, res) => {
     }
 };
 
-// Test-mode OTP configuration (default enabled until SMS integration is live)
-const DEFAULT_TEST_OTP = process.env.DEFAULT_TEST_OTP || '123456';
-const USE_DEFAULT_TEST_OTP = String(process.env.USE_DEFAULT_TEST_OTP || 'true').toLowerCase() === 'true';
-const generateOTP = () => (
-    USE_DEFAULT_TEST_OTP
-        ? DEFAULT_TEST_OTP
-        : Math.floor(100000 + Math.random() * 900000).toString()
-);
+// Always generate a real random OTP — no fixed test code
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 exports.sendOtp = async (req, res) => {
     const { phoneNumber, name, email } = req.body;
@@ -259,11 +253,8 @@ exports.sendOtp = async (req, res) => {
 
         res.json({
             success: true,
-            message: USE_DEFAULT_TEST_OTP
-                ? 'OTP generated in test mode. Use the shown 6-digit OTP.'
-                : 'OTP sent successfully',
-            otp,
-            otpMode: USE_DEFAULT_TEST_OTP ? 'test' : 'live'
+            message: 'OTP sent successfully',
+            otp
         });
 
     } catch (error) {
