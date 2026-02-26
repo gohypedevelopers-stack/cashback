@@ -4376,6 +4376,9 @@ const buildRedemptionEventWhere = (vendor, query = {}) => {
             { userId: null }
         ];
     }
+    if (query.userId) {
+        where.userId = query.userId;
+    }
 
     return where;
 };
