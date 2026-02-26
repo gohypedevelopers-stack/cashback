@@ -1448,6 +1448,8 @@ exports.updateVendorProfile = async (req, res) => {
                     userId: req.user.id,
                     businessName: businessName || 'My Company',
                     contactPhone,
+                    alternatePhone: alternatePhone || null,
+                    designation: designation || null,
                     contactEmail: contactEmail || null,
                     gstin,
                     address: normalizedAddress || null,
@@ -1460,6 +1462,8 @@ exports.updateVendorProfile = async (req, res) => {
                 data: {
                     businessName,
                     contactPhone,
+                    alternatePhone: alternatePhone || null,
+                    designation: designation || null,
                     contactEmail: contactEmail || null,
                     gstin,
                     address: normalizedAddress || null
