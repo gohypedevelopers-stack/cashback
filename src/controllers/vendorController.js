@@ -1434,11 +1434,6 @@ exports.updateVendorProfile = async (req, res) => {
             pincode
         } = req.body || {};
 
-        const normalizedAddress = [address, city, state, pincode]
-            .map((value) => (value === undefined || value === null ? '' : String(value).trim()))
-            .filter(Boolean)
-            .join(', ');
-
         // Ensure Vendor Exists (or Create it)
         let vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
 
@@ -1452,7 +1447,10 @@ exports.updateVendorProfile = async (req, res) => {
                     designation: designation || null,
                     contactEmail: contactEmail || null,
                     gstin,
-                    address: normalizedAddress || null,
+                    address: address || null,
+                    city: city || null,
+                    state: state || null,
+                    pincode: pincode || null,
                     status: 'active'
                 }
             });
@@ -1462,11 +1460,14 @@ exports.updateVendorProfile = async (req, res) => {
                 data: {
                     businessName,
                     contactPhone,
-                    alternatePhone: alternatePhone || null,
-                    designation: designation || null,
-                    contactEmail: contactEmail || null,
-                    gstin,
-                    address: normalizedAddress || null
+                    alternatePhone: alternatePhone !== undefined ? (alternatePhone || null) : undefined,
+                    designation: designation !== undefined ? (designation || null) : undefined,
+                    contactEmail: contactEmail !== undefined ? (contactEmail || null) : undefined,
+                    gstin: gstin !== undefined ? (gstin || null) : undefined,
+                    address: address !== undefined ? (address || null) : undefined,
+                    city: city !== undefined ? (city || null) : undefined,
+                    state: state !== undefined ? (state || null) : undefined,
+                    pincode: pincode !== undefined ? (pincode || null) : undefined
                 }
             });
         }

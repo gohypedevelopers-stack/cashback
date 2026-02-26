@@ -2100,14 +2100,19 @@ exports.getVendorOverview = async (req, res) => {
 exports.updateVendorDetails = async (req, res) => {
     try {
         const { id } = req.params;
-        const { businessName, contactPhone, contactEmail, gstin, address, techFeePerQr } = req.body;
+        const { businessName, contactPhone, alternatePhone, designation, contactEmail, gstin, address, city, state, pincode, techFeePerQr } = req.body;
         const data = {};
 
         if (businessName !== undefined) data.businessName = businessName;
         if (contactPhone !== undefined) data.contactPhone = contactPhone;
+        if (alternatePhone !== undefined) data.alternatePhone = alternatePhone;
+        if (designation !== undefined) data.designation = designation;
         if (contactEmail !== undefined) data.contactEmail = contactEmail;
         if (gstin !== undefined) data.gstin = gstin;
         if (address !== undefined) data.address = address;
+        if (city !== undefined) data.city = city;
+        if (state !== undefined) data.state = state;
+        if (pincode !== undefined) data.pincode = pincode;
         if (techFeePerQr !== undefined) {
             const fee = parseFloat(techFeePerQr);
             if (!isNaN(fee) && fee >= 0) {
