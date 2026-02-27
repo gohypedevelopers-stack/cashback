@@ -4427,123 +4427,65 @@ const mapRedemptionEvent = (event) => {
     };
 };
 
-exports.getVendorRedemptions = async (req, res) => {
-    try {
-        const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const { page, limit, skip } = parsePagination(req, { defaultLimit: 25, maxLimit: 200 });
-        const where = buildRedemptionEventWhere(vendor, req.query);
-        const firstScanOnly = String(req.query.firstScanOnly || '').toLowerCase() === 'true';
-
-        let firstScanUserIds = null;
-        if (firstScanOnly) {
-            const allEvents = await prisma.redemptionEvent.findMany({
-                where: {
-                    ...where,
-                    userId: { not: null }
-                },
-                orderBy: { createdAt: 'asc' },
-                select: { id: true, userId: true }
-            });
-            const seen = new Set();
-            const allowedEventIds = [];
-            allEvents.forEach((event) => {
-                if (!event.userId || seen.has(event.userId)) return;
-                seen.add(event.userId);
-                allowedEventIds.push(event.id);
-            });
-            firstScanUserIds = allowedEventIds;
-        }
-
-        const whereClause =
-            firstScanOnly && Array.isArray(firstScanUserIds)
-                ? {
-                    ...where,
-                    id: {
-                        in: firstScanUserIds.length ? firstScanUserIds : ['__none__']
-                    }
-                }
-                : where;
-
-        const [events, total] = await Promise.all([
-            prisma.redemptionEvent.findMany({
-                where: whereClause,
-                include: {
-                    Campaign: { select: { id: true, title: true } },
-                    QRCode: { select: { id: true, uniqueHash: true, campaignBudgetId: true } },
-                    User: { select: { id: true, name: true, phoneNumber: true } }
-                },
-                orderBy: { createdAt: 'desc' },
-                skip,
-                take: limit
-            }),
-            prisma.redemptionEvent.count({ where: whereClause })
-        ]);
-
-        res.json({
-            redemptions: events.map(mapRedemptionEvent),
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.ceil(total / limit)
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ message: 'Failed to fetch redemptions', error: error.message });
-    }
-};
-
 exports.exportVendorRedemptions = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        const where = buildRedemptionEventWhere(vendor, req.query);
-
-        const events = await prisma.redemptionEvent.findMany({
-            where,
+        
+        const qrWhere = {
+            status: 'redeemed',
+            Campaign: { Brand: { vendorId: vendor.id } }
+        };
+        
+        if (req.query.campaignId) {
+            qrWhere.campaignId = req.query.campaignId;
+        }
+        
+        const qrs = await prisma.qRCode.findMany({
+            where: qrWhere,
             include: {
-                Campaign: { select: { title: true } },
-                QRCode: { select: { uniqueHash: true, campaignBudgetId: true } },
-                User: { select: { name: true, phoneNumber: true } }
+                Campaign: { select: { title: true, Brand: { select: { vendorId: true } } } }
             },
-            orderBy: { createdAt: 'desc' },
+            orderBy: { redeemedAt: 'desc' },
             take: 10000
         });
 
+        const userIds = Array.from(new Set(qrs.map(qr => qr.redeemedByUserId).filter(Boolean)));
+        let userMap = new Map();
+        
+        if (userIds.length > 0) {
+            const users = await prisma.user.findMany({
+                where: { id: { in: userIds } },
+                select: { id: true, name: true, phoneNumber: true }
+            });
+            userMap = new Map(users.map(u => [u.id, u]));
+        }
+
         const header = [
-            'Date',
-            'Type',
+            'Redeemed Date',
             'Amount',
             'Campaign',
             'QR Hash',
-            'Batch ID',
-            'City',
-            'State',
-            'Pincode',
-            'Latitude',
-            'Longitude',
-            'AccuracyMeters',
             'Customer Name',
             'Customer Mobile'
         ];
 
-        const rows = events.map((event) => [
-            new Date(event.createdAt).toISOString(),
-            event.type,
-            toNumber(event.amount, 0).toFixed(2),
-            event.Campaign?.title || '',
-            event.QRCode?.uniqueHash || '',
-            event.QRCode?.campaignBudgetId || '',
-            event.city || '',
-            event.state || '',
-            event.pincode || '',
-            event.lat !== null && event.lat !== undefined ? Number(event.lat).toString() : '',
-            event.lng !== null && event.lng !== undefined ? Number(event.lng).toString() : '',
-            event.accuracyMeters !== null && event.accuracyMeters !== undefined
-                ? Number(event.accuracyMeters).toString()
-                : '',
-            event.User?.name || '',
-            event.User?.phoneNumber || ''
-        ]);
+        const rows = qrs.map((qr) => {
+            const user = qr.redeemedByUserId ? userMap.get(qr.redeemedByUserId) : null;
+            return [
+                qr.redeemedAt ? new Date(qr.redeemedAt).toISOString() : new Date(qr.createdAt).toISOString(),
+                toNumber(qr.cashbackAmount, 0).toFixed(2),
+                qr.Campaign?.title || '',
+                qr.uniqueHash || '',
+                user?.name || '',
+                user?.phoneNumber || ''
+            ];
+        });
+
+        const escapeCsvValue = (value) => {
+            const source = value === undefined || value === null ? '' : String(value);
+            const escaped = source.replace(/"/g, '""');
+            return `"${escaped}"`;
+        };
 
         const csv = [header, ...rows]
             .map((row) => row.map(escapeCsvValue).join(','))
