@@ -134,8 +134,21 @@ exports.getHomeData = async (req, res) => {
         const brands = await prisma.brand.findMany({
             where: { status: 'active' },
             take: 6,
-            select: { id: true, name: true, logoUrl: true }
+            select: {
+                id: true,
+                name: true,
+                logoUrl: true,
+                about: true,
+                _count: { select: { Products: true } }
+            }
         });
+        // Flatten _count for the frontend
+        const brandsWithCount = brands.map(b => ({
+            ...b,
+            banner: b.logoUrl,
+            productCount: b._count?.Products || 0,
+            _count: undefined
+        }));
 
         // Featured Products
         const featuredProductsRaw = await prisma.product.findMany({
@@ -155,7 +168,7 @@ exports.getHomeData = async (req, res) => {
 
         res.json({
             banners,
-            brands,
+            brands: brandsWithCount,
             featuredProducts,
             featuredCoupons,
             stats: { productsOwned: 0, productsReported: 0 } // Placeholders for guest
