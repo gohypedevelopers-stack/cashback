@@ -23,7 +23,7 @@ const toRoman = (num) => {
     }
     return result;
 };
-const QRS_PER_SHEET = 25;
+const DEFAULT_QRS_PER_GRID_PAGE = 25;
 const ALLOWED_QR_ECC_LEVELS = new Set(['L', 'M', 'Q', 'H']);
 const QR_ERROR_CORRECTION_LEVEL = (() => {
     const configured = String(process.env.QR_PDF_ECC_LEVEL || 'L').trim().toUpperCase();
@@ -222,6 +222,7 @@ const renderQrBatch = async (qrItems, width) => {
  * @param {boolean} [options.compactMode] - Faster layout without per-QR labels
  * @param {number} [options.startSheetIndex] - Zero-based sheet offset for partial postpaid exports
  * @param {number} [options.totalSheetCount] - Total postpaid sheet count across full campaign
+ * @param {number} [options.qrsPerSheet] - Logical postpaid sheet size for large-scale campaigns
  * @returns {Promise<Buffer>} PDF buffer
  */
 async function generateQrPdf({
@@ -234,7 +235,8 @@ async function generateQrPdf({
     productName,
     compactMode,
     startSheetIndex,
-    totalSheetCount
+    totalSheetCount,
+    qrsPerSheet
 }) {
     return new Promise(async (resolve, reject) => {
         try {
@@ -253,106 +255,142 @@ async function generateQrPdf({
             const isPostpaid = planType === 'postpaid';
 
             if (isPostpaid) {
-                // --- POSTPAID: 25 QRs per sheet, labeled Sheet A, Sheet B, etc. ---
-                const totalSheets = Math.ceil(qrCodes.length / QRS_PER_SHEET);
+                // --- POSTPAID: dynamic QRs per logical sheet; each PDF page still renders max 25 QRs grid ---
+                const logicalQrsPerSheet = Number.isFinite(Number(qrsPerSheet)) && Number(qrsPerSheet) > 0
+                    ? Number(qrsPerSheet)
+                    : DEFAULT_QRS_PER_GRID_PAGE;
+                const totalSheets = Math.ceil(qrCodes.length / logicalQrsPerSheet);
                 const sheetOffset = Number.isFinite(Number(startSheetIndex))
                     ? Math.max(0, Number(startSheetIndex))
                     : 0;
                 const displayTotalSheets = Number.isFinite(Number(totalSheetCount)) && Number(totalSheetCount) > 0
                     ? Number(totalSheetCount)
                     : sheetOffset + totalSheets;
+                let hasDrawnFirstPostpaidPage = false;
 
                 for (let sheetIdx = 0; sheetIdx < totalSheets; sheetIdx++) {
-                    if (sheetIdx > 0) doc.addPage();
-
                     const globalSheetIdx = sheetOffset + sheetIdx;
                     const sheetLetter = toRoman(globalSheetIdx + 1);
-                    const sheetQrs = qrCodes.slice(sheetIdx * QRS_PER_SHEET, (sheetIdx + 1) * QRS_PER_SHEET);
+                    const sheetQrs = qrCodes.slice(
+                        sheetIdx * logicalQrsPerSheet,
+                        (sheetIdx + 1) * logicalQrsPerSheet
+                    );
+                    const pagesPerLogicalSheet = Math.max(
+                        1,
+                        Math.ceil(sheetQrs.length / DEFAULT_QRS_PER_GRID_PAGE)
+                    );
+                    const SHEET_ID_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                    const idLetter = globalSheetIdx < SHEET_ID_LETTERS.length
+                        ? SHEET_ID_LETTERS[globalSheetIdx]
+                        : `${globalSheetIdx + 1}`;
+                    const sheetQrImageBuffers = await renderQrBatch(sheetQrs, 85);
 
-                    // --- Header ---
-                    let yPos = 20;
+                    for (let logicalPageIdx = 0; logicalPageIdx < pagesPerLogicalSheet; logicalPageIdx++) {
+                        if (hasDrawnFirstPostpaidPage) doc.addPage();
+                        hasDrawnFirstPostpaidPage = true;
 
-                    // Cashback amount for this sheet (pick first positive value, fallback 0)
-                    const sheetCashback =
-                        sheetQrs
-                            .map((item) => Number(item?.cashbackAmount))
-                            .find((value) => Number.isFinite(value) && value > 0) || 0;
-                    if (sheetCashback > 0) {
-                        doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
-                        doc.text(`Rs. ${sheetCashback.toFixed(0)}`, 30, yPos, { width: 120, align: 'left' });
+                        const pageStart = logicalPageIdx * DEFAULT_QRS_PER_GRID_PAGE;
+                        const pageQrs = sheetQrs.slice(
+                            pageStart,
+                            pageStart + DEFAULT_QRS_PER_GRID_PAGE
+                        );
+                        const pageBuffers = sheetQrImageBuffers.slice(
+                            pageStart,
+                            pageStart + DEFAULT_QRS_PER_GRID_PAGE
+                        );
+
+                        // --- Header ---
+                        let yPos = 20;
+
+                        // Cashback amount for this logical sheet (pick first positive value, fallback 0)
+                        const sheetCashback =
+                            sheetQrs
+                                .map((item) => Number(item?.cashbackAmount))
+                                .find((value) => Number.isFinite(value) && value > 0) || 0;
+                        if (sheetCashback > 0) {
+                            doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
+                            doc.text(`Rs. ${sheetCashback.toFixed(0)}`, 30, yPos, { width: 120, align: 'left' });
+                            doc.fillColor('black');
+                        }
+
+                        doc.fontSize(20).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', 30, yPos, { width: doc.page.width - 60, align: 'center' });
                         doc.fillColor('black');
-                    }
+                        yPos += 28;
 
-                    doc.fontSize(20).font('Helvetica-Bold').fillColor('#10b981').text('Assured Rewards', 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                    doc.fillColor('black');
-                    yPos += 28;
+                        if (brandLogoBuffer) {
+                            const logoWidth = 50;
+                            doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
+                            yPos += 55;
+                        } else if (brandName) {
+                            doc.fontSize(16).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                            yPos += 22;
+                        }
 
-                    if (brandLogoBuffer) {
-                        const logoWidth = 50;
-                        doc.image(brandLogoBuffer, (doc.page.width - logoWidth) / 2, yPos, { width: logoWidth });
-                        yPos += 55;
-                    } else if (brandName) {
-                        doc.fontSize(16).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                        yPos += 22;
-                    }
+                        if (brandLogoBuffer && brandName) {
+                            doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                            yPos += 18;
+                        }
 
-                    if (brandLogoBuffer && brandName) {
-                        doc.fontSize(14).font('Helvetica-Bold').text(brandName, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        doc.fontSize(14).font('Helvetica-Bold').text(`Sheet ${sheetLetter}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
                         yPos += 18;
-                    }
 
-                    doc.fontSize(14).font('Helvetica-Bold').text(`Sheet ${sheetLetter}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                    yPos += 18;
+                        doc.fontSize(9).font('Helvetica').text(`Campaign: ${campaignTitle}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        yPos += 13;
 
-                    doc.fontSize(9).font('Helvetica').text(`Campaign: ${campaignTitle}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                    yPos += 13;
+                        doc.text(`Product: ${productName || 'N/A'}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        yPos += 13;
 
-                    doc.text(`Product: ${productName || 'N/A'}`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                    yPos += 13;
+                        doc.text(`Sheet ${globalSheetIdx + 1} of ${displayTotalSheets}  |  ${sheetQrs.length} QR Codes`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
+                        yPos += 13;
 
-                    doc.text(`Sheet ${globalSheetIdx + 1} of ${displayTotalSheets}  |  ${sheetQrs.length} QR Codes`, 30, yPos, { width: doc.page.width - 60, align: 'center' });
-                    yPos += 18;
+                        if (pagesPerLogicalSheet > 1) {
+                            doc.fontSize(8).font('Helvetica').fillColor('#4b5563');
+                            doc.text(`Page ${logicalPageIdx + 1} of ${pagesPerLogicalSheet}`, 30, yPos, {
+                                width: doc.page.width - 60,
+                                align: 'center'
+                            });
+                            doc.fillColor('black');
+                            yPos += 14;
+                        } else {
+                            yPos += 5;
+                        }
 
-                    // --- Grid: 5 cols x 5 rows = 25 QRs per sheet ---
-                    const qrSize = 85;
-                    const labelHeight = 30;
-                    const cellWidth = (doc.page.width - 60) / 5;
-                    const cellHeight = qrSize + labelHeight + 6;
-                    const startX = 30;
-                    const qrImageBuffers = await renderQrBatch(sheetQrs, qrSize);
+                        // --- Grid: 5 cols x 5 rows = 25 QRs per page ---
+                        const qrSize = 85;
+                        const labelHeight = 30;
+                        const cellWidth = (doc.page.width - 60) / 5;
+                        const cellHeight = qrSize + labelHeight + 6;
+                        const startX = 30;
 
-                    for (let i = 0; i < sheetQrs.length; i++) {
-                        const qr = sheetQrs[i];
-                        const col = i % 5;
-                        const row = Math.floor(i / 5);
-                        const currentX = startX + col * cellWidth;
-                        const currentY = yPos + row * cellHeight;
+                        for (let i = 0; i < pageQrs.length; i++) {
+                            const qr = pageQrs[i];
+                            const col = i % 5;
+                            const row = Math.floor(i / 5);
+                            const currentX = startX + col * cellWidth;
+                            const currentY = yPos + row * cellHeight;
 
-                        doc.image(qrImageBuffers[i], currentX + (cellWidth - qrSize) / 2, currentY, {
-                            width: qrSize,
-                            height: qrSize
-                        });
+                            doc.image(pageBuffers[i], currentX + (cellWidth - qrSize) / 2, currentY, {
+                                width: qrSize,
+                                height: qrSize
+                            });
 
-                        // Sheet-based ID label: A1, A2, ... A25, B1, B2, ...
-                        const SHEET_ID_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-                        const idLetter = globalSheetIdx < SHEET_ID_LETTERS.length
-                            ? SHEET_ID_LETTERS[globalSheetIdx]
-                            : `${globalSheetIdx + 1}`;
-                        const qrLabel = `${idLetter}${i + 1}`;
-                        const labelY = currentY + qrSize + 2;
-                        doc.fontSize(9).font('Helvetica-Bold');
-                        doc.text(qrLabel, currentX, labelY, {
-                            width: cellWidth,
-                            align: 'center'
-                        });
-
-                        const qrCashback = Number(qr?.cashbackAmount) || 0;
-                        if (qrCashback > 0) {
-                            doc.fontSize(8).font('Helvetica');
-                            doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
+                            const withinSheetIndex = pageStart + i + 1;
+                            const qrLabel = `${idLetter}${withinSheetIndex}`;
+                            const labelY = currentY + qrSize + 2;
+                            doc.fontSize(9).font('Helvetica-Bold');
+                            doc.text(qrLabel, currentX, labelY, {
                                 width: cellWidth,
                                 align: 'center'
                             });
+
+                            const qrCashback = Number(qr?.cashbackAmount) || 0;
+                            if (qrCashback > 0) {
+                                doc.fontSize(8).font('Helvetica');
+                                doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
+                                    width: cellWidth,
+                                    align: 'center'
+                                });
+                            }
                         }
                     }
                 }
