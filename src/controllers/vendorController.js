@@ -3951,13 +3951,6 @@ const buildRedemptionEventWhere = (vendor, query = {}) => {
     if (query.type) where.type = query.type;
     if (query.city) where.city = { equals: query.city, mode: 'insensitive' };
     if (query.state) where.state = { equals: query.state, mode: 'insensitive' };
-    if (query.mobile) {
-        where.User = {
-            is: {
-                phoneNumber: { contains: String(query.mobile).trim() }
-            }
-        };
-    }
     if (query.productId) {
         where.Campaign = {
             is: {
