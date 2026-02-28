@@ -2,6 +2,14 @@ const crypto = require('crypto');
 
 const generateQrHash = () => crypto.randomBytes(32).toString('hex');
 const DEFAULT_AUTO_SERIES = 'AUTO';
+const DEFAULT_DB_CHUNK_SIZE = Number.parseInt(
+    process.env.QR_ALLOCATION_DB_CHUNK_SIZE || '10000',
+    10
+) || 10000;
+const DEFAULT_RESPONSE_SAMPLE_LIMIT = Number.parseInt(
+    process.env.QR_ALLOCATION_SAMPLE_LIMIT || '100',
+    10
+) || 100;
 
 const normalizeSeriesCode = (value, fallback = DEFAULT_AUTO_SERIES) => {
     if (typeof value !== 'string') return fallback;
@@ -41,7 +49,7 @@ const buildInventoryRows = (
     return rows;
 };
 
-const createInChunks = async (tx, rows, chunkSize = 250) => {
+const createInChunks = async (tx, rows, chunkSize = DEFAULT_DB_CHUNK_SIZE) => {
     if (!rows.length) return 0;
     let created = 0;
     for (let index = 0; index < rows.length; index += chunkSize) {
@@ -51,6 +59,35 @@ const createInChunks = async (tx, rows, chunkSize = 250) => {
             skipDuplicates: true
         });
         created += Number(result?.count || 0);
+    }
+    return created;
+};
+
+const createGeneratedInventoryInChunks = async (
+    tx,
+    {
+        vendorId,
+        count,
+        seriesCode = DEFAULT_AUTO_SERIES,
+        startOrder = 1,
+        sourceBatch = 'AUTO_SEED',
+        importedAt = new Date(),
+        chunkSize = DEFAULT_DB_CHUNK_SIZE
+    }
+) => {
+    const safeCount = Math.max(0, Number.parseInt(count, 10) || 0);
+    if (!safeCount) return 0;
+
+    let created = 0;
+    for (let offset = 0; offset < safeCount; offset += chunkSize) {
+        const size = Math.min(chunkSize, safeCount - offset);
+        const rows = buildInventoryRows(vendorId, size, {
+            seriesCode,
+            startOrder: startOrder + offset,
+            sourceBatch,
+            importedAt
+        });
+        created += await createInChunks(tx, rows, chunkSize);
     }
     return created;
 };
@@ -160,12 +197,13 @@ const seedVendorInventory = async (
     if (normalizedSeriesCodes.length > 0 && Number.isFinite(safePerSeriesCount) && safePerSeriesCount > 0) {
         let created = 0;
         for (const seriesCode of normalizedSeriesCodes) {
-            const rows = buildInventoryRows(vendorId, safePerSeriesCount, {
+            created += await createGeneratedInventoryInChunks(tx, {
+                vendorId,
+                count: safePerSeriesCount,
                 seriesCode,
                 startOrder: 1,
                 sourceBatch
             });
-            created += await createInChunks(tx, rows);
         }
 
         const total = await tx.qRCode.count({
@@ -201,12 +239,13 @@ const seedVendorInventory = async (
         _max: { seriesOrder: true }
     });
     const startOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
-    const rows = buildInventoryRows(vendorId, safeTargetCount, {
+    const created = await createGeneratedInventoryInChunks(tx, {
+        vendorId,
+        count: safeTargetCount,
         seriesCode: DEFAULT_AUTO_SERIES,
         startOrder,
         sourceBatch
     });
-    const created = await createInChunks(tx, rows);
 
     const total = await tx.qRCode.count({
         where: {
@@ -293,15 +332,9 @@ const allocateInventoryQrs = async (
     const orderBy = normalizedSeries
         ? [{ seriesOrder: 'asc' }, { createdAt: 'asc' }]
         : [{ createdAt: 'asc' }];
-    let inventoryQrs = await tx.qRCode.findMany({
-        where,
-        orderBy,
-        take: safeQuantity,
-        select: { id: true, uniqueHash: true }
-    });
-
-    if (inventoryQrs.length < safeQuantity) {
-        const missingCount = safeQuantity - inventoryQrs.length;
+    const existingInventoryCount = await tx.qRCode.count({ where });
+    if (existingInventoryCount < safeQuantity) {
+        const missingCount = safeQuantity - existingInventoryCount;
         const seriesOrderCursor = await tx.qRCode.aggregate({
             where: {
                 vendorId,
@@ -310,47 +343,75 @@ const allocateInventoryQrs = async (
             _max: { seriesOrder: true }
         });
         const startOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
-        const rows = buildInventoryRows(vendorId, missingCount, {
+        await createGeneratedInventoryInChunks(tx, {
+            vendorId,
+            count: missingCount,
             seriesCode: normalizedSeries || DEFAULT_AUTO_SERIES,
             startOrder,
             sourceBatch: 'AUTO_ON_DEMAND'
         });
-        await createInChunks(tx, rows);
+    }
+    const dbChunkSize = Math.max(100, DEFAULT_DB_CHUNK_SIZE);
+    const sampleLimit = Math.max(0, DEFAULT_RESPONSE_SAMPLE_LIMIT);
+    let remaining = safeQuantity;
+    let fundedCount = 0;
+    const sampleQrs = [];
 
-        inventoryQrs = await tx.qRCode.findMany({
+    while (remaining > 0) {
+        const chunkTake = Math.min(remaining, dbChunkSize);
+        const chunk = await tx.qRCode.findMany({
             where,
             orderBy,
-            take: safeQuantity,
-            select: { id: true, uniqueHash: true }
+            take: chunkTake,
+            select: {
+                id: true,
+                uniqueHash: true,
+                seriesCode: true,
+                seriesOrder: true
+            }
         });
+        if (!chunk.length) break;
+
+        const qrIds = chunk.map((qr) => qr.id);
+        await tx.qRCode.updateMany({
+            where: { id: { in: qrIds } },
+            data: {
+                status: 'funded',
+                campaignId,
+                campaignBudgetId,
+                cashbackAmount,
+                orderId
+            }
+        });
+
+        fundedCount += chunk.length;
+        remaining -= chunk.length;
+
+        if (sampleQrs.length < sampleLimit) {
+            const freeSlots = sampleLimit - sampleQrs.length;
+            const sampleChunk = chunk.slice(0, freeSlots).map((qr) => ({
+                id: qr.id,
+                uniqueHash: qr.uniqueHash,
+                seriesCode: qr.seriesCode || null,
+                seriesOrder: Number.isFinite(qr.seriesOrder) ? qr.seriesOrder : null,
+                cashbackAmount
+            }));
+            sampleQrs.push(...sampleChunk);
+        }
     }
 
-    if (inventoryQrs.length < safeQuantity) {
+    if (fundedCount < safeQuantity) {
         const seriesMessage = normalizedSeries ? ` for series "${normalizedSeries}"` : '';
         const error = new Error(`Insufficient QR inventory${seriesMessage}. Please contact admin to provision more codes.`);
         error.status = 400;
         throw error;
     }
 
-    const qrIds = inventoryQrs.map((qr) => qr.id);
-
-    await tx.qRCode.updateMany({
-        where: { id: { in: qrIds } },
-        data: {
-            status: 'funded',
-            campaignId,
-            campaignBudgetId,
-            cashbackAmount,
-            orderId
-        }
-    });
-
-    return tx.qRCode.findMany({
-        where: { id: { in: qrIds } },
-        orderBy: normalizedSeries
-            ? [{ seriesOrder: 'asc' }, { createdAt: 'asc' }]
-            : [{ createdAt: 'asc' }]
-    });
+    return {
+        fundedCount,
+        sampleQrs,
+        sampled: fundedCount > sampleQrs.length
+    };
 };
 
 module.exports = {

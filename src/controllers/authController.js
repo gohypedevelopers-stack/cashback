@@ -11,6 +11,49 @@ const generateToken = (id, role) => {
     });
 };
 
+const normalizeLoginIdentifier = (value) =>
+    String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+
+const findUserByFlexibleUsername = async (loginUsername) => {
+    if (!loginUsername) return null;
+
+    // 1) Exact username lookup
+    let user = await prisma.user.findUnique({ where: { username: loginUsername } });
+    if (user) return user;
+
+    // 2) Case-insensitive username lookup
+    user = await prisma.user.findFirst({
+        where: {
+            username: {
+                equals: loginUsername,
+                mode: 'insensitive'
+            }
+        }
+    });
+    if (user) return user;
+
+    // 3) Separator-insensitive fallback (treat '-' and '_' etc. as equivalent).
+    // Only accept when there is exactly one match to avoid ambiguous logins.
+    const normalizedUsername = normalizeLoginIdentifier(loginUsername);
+    if (!normalizedUsername) return null;
+
+    const matches = await prisma.$queryRaw`
+        SELECT id
+        FROM "User"
+        WHERE username IS NOT NULL
+          AND LOWER(REGEXP_REPLACE(username, '[^a-zA-Z0-9]', '', 'g')) = ${normalizedUsername}
+        LIMIT 2
+    `;
+
+    if (!Array.isArray(matches) || matches.length !== 1 || !matches[0]?.id) {
+        return null;
+    }
+
+    return prisma.user.findUnique({ where: { id: matches[0].id } });
+};
+
 exports.register = async (req, res) => {
     const { name, email, password, role, username } = req.body;
 
@@ -99,7 +142,7 @@ exports.login = async (req, res) => {
         }
 
         if (!user && loginUsername) {
-            user = await prisma.user.findUnique({ where: { username: loginUsername } });
+            user = await findUserByFlexibleUsername(loginUsername);
         }
 
         // Allow vendor login using actual vendor id from onboarding response.

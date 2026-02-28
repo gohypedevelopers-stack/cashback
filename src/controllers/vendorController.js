@@ -17,6 +17,10 @@ const {
     normalizeSeriesCode,
     seedVendorInventory
 } = require('../services/qrInventoryService');
+const {
+    resolvePostpaidSheetSize,
+    resolvePostpaidSheetCount
+} = require('../utils/postpaidSheet');
 const { createInvoice, renderInvoiceToBuffer, withShareToken } = require('../services/invoiceService');
 const { logInvoiceCreation } = require('../utils/debugLogger');
 
@@ -31,6 +35,18 @@ const DEFAULT_VENDOR_QR_SERIES_CODES = String(
     .filter(Boolean);
 const DEFAULT_VENDOR_QR_SERIES_SIZE = Number(process.env.DEFAULT_VENDOR_QR_SERIES_SIZE || 100);
 const INVOICE_GST_RATE = Number(process.env.INVOICE_GST_RATE || 0.18);
+const LARGE_TX_TIMEOUT_MS = Number.isFinite(Number(process.env.VENDOR_LARGE_TX_TIMEOUT_MS))
+    ? Number(process.env.VENDOR_LARGE_TX_TIMEOUT_MS)
+    : 900000;
+const LARGE_TX_MAX_WAIT_MS = Number.isFinite(Number(process.env.VENDOR_TX_MAX_WAIT_MS))
+    ? Number(process.env.VENDOR_TX_MAX_WAIT_MS)
+    : 10000;
+const CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX = Number.isFinite(Number(process.env.CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX))
+    ? Math.max(200, Number(process.env.CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX))
+    : 5000;
+const CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT = Number.isFinite(Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
+    ? Math.max(1000, Number(process.env.CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT))
+    : 10000;
 const LEGACY_BILLABLE_CATEGORIES = [
     'campaign_payment',
     'qr_purchase',
@@ -831,7 +847,9 @@ const fundInventoryQrs = async (req, res) => {
             const wallet = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
 
             return {
-                qrs: fundedQrs,
+                fundedCount: Number(fundedQrs?.fundedCount || 0),
+                sampleQrs: Array.isArray(fundedQrs?.sampleQrs) ? fundedQrs.sampleQrs : [],
+                sampled: Boolean(fundedQrs?.sampled),
                 order,
                 vendorId: vendor.id,
                 totalCost: toNumber(cashbackTotal + techFeeTotal + voucherFeeTotal, 0),
@@ -844,6 +862,9 @@ const fundInventoryQrs = async (req, res) => {
                 wallet,
                 selectedSeries: normalizedSeries
             };
+        }, {
+            timeout: LARGE_TX_TIMEOUT_MS,
+            maxWait: LARGE_TX_MAX_WAIT_MS
         });
 
         const orderSummary = result?.order
@@ -861,8 +882,10 @@ const fundInventoryQrs = async (req, res) => {
 
         res.status(201).json({
             message: 'QRs funded successfully',
-            count: result.qrs.length,
-            qrs: result.qrs,
+            count: result.fundedCount,
+            qrs: result.sampleQrs,
+            sampleHashes: result.sampleQrs.map((item) => item.uniqueHash),
+            sampled: result.sampled,
             order: orderSummary,
             selectedSeries: result.selectedSeries
         });
@@ -1229,31 +1252,60 @@ exports.getVendorCampaigns = async (req, res) => {
         const enhancedCampaigns = await Promise.all(campaigns.map(async (camp) => {
             console.log(`getVendorCampaigns: Processing campaign ${camp.id} (${camp.planType}/${camp.status})`);
             if (camp.planType === 'postpaid' && camp.status === 'active') {
-                const qrs = await prisma.qRCode.findMany({
+                const sheets = [];
+                const activeStatuses = ['funded', 'generated', 'active', 'assigned'];
+                const totalQrCount = await prisma.qRCode.count({
                     where: {
                         campaignId: camp.id,
-                        status: { in: ['funded', 'generated', 'active', 'assigned'] }
-                    },
-                    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-                    select: { cashbackAmount: true }
+                        status: { in: activeStatuses }
+                    }
                 });
 
-                const sheets = [];
-                const QRS_PER_SHEET = 25;
+                if (!totalQrCount) {
+                    return {
+                        ...camp,
+                        sheets,
+                        qrsPerSheet: resolvePostpaidSheetSize(0),
+                        sheetCount: 0,
+                        subtotal: 0,
+                        totalBudget: 0
+                    };
+                }
+
+                const qrsPerSheet = resolvePostpaidSheetSize(totalQrCount);
+                const sheetRows = await prisma.$queryRaw`
+                    WITH ordered_qrs AS (
+                        SELECT
+                            "cashbackAmount",
+                            FLOOR((ROW_NUMBER() OVER (ORDER BY "createdAt" ASC, "id" ASC) - 1) / ${qrsPerSheet})::int AS "sheetIndex"
+                        FROM "QRCode"
+                        WHERE
+                            "campaignId" = ${camp.id}
+                            AND "status" IN ('funded', 'generated', 'active', 'assigned')
+                    )
+                    SELECT
+                        "sheetIndex",
+                        COUNT(*)::int AS "count",
+                        COALESCE(MAX("cashbackAmount"), 0)::numeric AS "amount"
+                    FROM ordered_qrs
+                    GROUP BY "sheetIndex"
+                    ORDER BY "sheetIndex" ASC
+                `;
+
                 const toRomanSheet = (n) => { const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']; let r = '', x = Math.max(1, Math.floor(n)); for (let i = 0; i < v.length; i++) { while (x >= v[i]) { r += s[i]; x -= v[i]; } } return r; };
 
-                for (let i = 0; i < qrs.length; i += QRS_PER_SHEET) {
-                    const chunk = qrs.slice(i, i + QRS_PER_SHEET);
-                    const amount = Number(chunk[0]?.cashbackAmount || 0);
-                    const sheetIndex = i / QRS_PER_SHEET;
+                for (const row of sheetRows) {
+                    const amount = toNumber(row?.amount, 0);
+                    const sheetIndex = Number.parseInt(row?.sheetIndex, 10) || 0;
                     const label = toRomanSheet(sheetIndex + 1);
+                    const count = Number.parseInt(row?.count, 10) || 0;
 
                     sheets.push({
                         index: sheetIndex,
                         label,
-                        count: chunk.length,
+                        count,
                         amount,
-                        assignedTotal: toNumber(amount * chunk.length, 0),
+                        assignedTotal: toNumber(amount * count, 0),
                         isPaid: false
                     });
                 }
@@ -1265,6 +1317,8 @@ exports.getVendorCampaigns = async (req, res) => {
                 return {
                     ...camp,
                     sheets,
+                    qrsPerSheet,
+                    sheetCount: resolvePostpaidSheetCount(totalQrCount),
                     subtotal: totalBudgetFromSheets,
                     totalBudget: totalBudgetFromSheets
                 };
@@ -2710,8 +2764,11 @@ exports.payOrder = async (req, res) => {
                 order: updatedOrder,
                 totalPaid: toNumber(techFeeTotal + cashbackTotal, 0),
                 selectedSeries: requestedSeries,
-                fundedCount: fundedQrs.length
+                fundedCount: Number(fundedQrs?.fundedCount || 0)
             };
+        }, {
+            timeout: LARGE_TX_TIMEOUT_MS,
+            maxWait: LARGE_TX_MAX_WAIT_MS
         });
 
         await notifyAdminsAboutPaidOrder({
@@ -2975,7 +3032,7 @@ exports.payCampaign = async (req, res) => {
                     orderId: null,
                     seriesCode: requestedSeries
                 });
-                fundedCount += fundedQrs.length;
+                fundedCount += Number(fundedQrs?.fundedCount || 0);
             }
 
             await tx.campaign.update({
@@ -2995,7 +3052,10 @@ exports.payCampaign = async (req, res) => {
                 fundedCount,
                 selectedSeries: requestedSeries
             };
-        }, { timeout: 30000 });
+        }, {
+            timeout: LARGE_TX_TIMEOUT_MS,
+            maxWait: LARGE_TX_MAX_WAIT_MS
+        });
 
         safeLogVendorActivity({
             vendorId: result.vendorId,
@@ -3244,7 +3304,7 @@ exports.assignSheetCashback = async (req, res) => {
         if (!Number.isFinite(parsedSheet) || parsedSheet < 0) {
             return res.status(400).json({ message: 'Invalid sheet index' });
         }
-        if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
             return res.status(400).json({ message: 'Invalid cashback amount' });
         }
 
@@ -3263,23 +3323,34 @@ exports.assignSheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Sheet cashback assignment is only available for postpaid campaigns' });
         }
 
-        // Get all campaign QRs ordered by creation to determine sheet position
-        const allQrs = await prisma.qRCode.findMany({
-            where: {
-                campaignId,
-                status: { in: ['funded', 'generated', 'active', 'assigned'] }
-            },
-            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-            select: { id: true }
-        });
+        const toRomanLabel = (n) => { const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']; let r = '', x = Math.max(1, Math.floor(n)); for (let i = 0; i < v.length; i++) { while (x >= v[i]) { r += s[i]; x -= v[i]; } } return r; };
+        const sheetLabel = toRomanLabel(parsedSheet + 1);
 
-        const QRS_PER_SHEET = 25;
-        const start = parsedSheet * QRS_PER_SHEET;
-        const end = start + QRS_PER_SHEET;
-        const sheetQrIds = allQrs.slice(start, end).map(qr => qr.id);
+        const qrWhere = {
+            campaignId,
+            status: { in: ['funded', 'generated', 'active', 'assigned'] }
+        };
+        const totalQrsCount = await prisma.qRCode.count({ where: qrWhere });
+        const qrsPerSheet = resolvePostpaidSheetSize(totalQrsCount);
+        const start = parsedSheet * qrsPerSheet;
+        const sheetQrs = await prisma.qRCode.findMany({
+            where: qrWhere,
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            skip: start,
+            take: qrsPerSheet,
+            select: { id: true, cashbackAmount: true }
+        });
+        const sheetQrIds = sheetQrs.map(qr => qr.id);
 
         if (!sheetQrIds.length) {
             return res.status(400).json({ message: 'No QR codes found for this sheet' });
+        }
+
+        const alreadyAssigned = sheetQrs.some((qr) => Number(qr?.cashbackAmount || 0) > 0);
+        if (alreadyAssigned) {
+            return res.status(409).json({
+                message: `Sheet ${sheetLabel} is already recharged. You can recharge each sheet only once.`
+            });
         }
 
         const updated = await prisma.qRCode.updateMany({
@@ -3302,14 +3373,12 @@ exports.assignSheetCashback = async (req, res) => {
             }
         });
 
-        const toRomanLabel = (n) => { const v = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1], s = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I']; let r = '', x = Math.max(1, Math.floor(n)); for (let i = 0; i < v.length; i++) { while (x >= v[i]) { r += s[i]; x -= v[i]; } } return r; };
-        const sheetLabel = toRomanLabel(parsedSheet + 1);
-
         res.json({
-            message: `Updated ${updated.count} QR codes on Sheet ${sheetLabel} to Rs. ${parsedAmount}`,
+            message: `Recharged ${updated.count} QR codes on Sheet ${sheetLabel} with Rs. ${parsedAmount}`,
             totalBudget: totalCashback,
             updated: updated.count,
-            sheetLabel
+            sheetLabel,
+            qrsPerSheet
         });
     } catch (error) {
         console.error('Assign Sheet Cashback Error:', error);
@@ -3347,12 +3416,12 @@ exports.paySheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Sheet payment is only for postpaid campaigns' });
         }
 
-        const QRS_PER_SHEET = 25;
         const allQrsCount = await prisma.qRCode.count({
             where: { campaignId, status: { in: ['funded', 'generated', 'active', 'assigned'] } }
         });
-        const start = parsedSheet * QRS_PER_SHEET;
-        const sheetQrCount = Math.max(0, Math.min(QRS_PER_SHEET, allQrsCount - start));
+        const qrsPerSheet = resolvePostpaidSheetSize(allQrsCount);
+        const start = parsedSheet * qrsPerSheet;
+        const sheetQrCount = Math.max(0, Math.min(qrsPerSheet, allQrsCount - start));
 
         if (sheetQrCount <= 0) {
             return res.status(400).json({ message: 'No QR codes found for this sheet' });
@@ -3371,6 +3440,7 @@ exports.paySheetCashback = async (req, res) => {
             techFeeTotal: 0,
             voucherFeeTotal: 0,
             cashbackTotal: 0,
+            qrsPerSheet,
             campaignTotalBudget,
             campaignTitle: campaign.title,
             invoice: null,
@@ -3401,7 +3471,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const parsedChunkTotalParts = Number.parseInt(req.query?.totalParts, 10);
         const safeOffset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
         const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
-            ? Math.min(parsedLimit, 2000)
+            ? Math.min(parsedLimit, CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX)
             : 800;
         const hasRequestedSheet =
             Number.isFinite(parsedSheetIndex) && parsedSheetIndex >= 0;
@@ -3457,18 +3527,40 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             );
         const fastModeRequested =
             explicitFastModeRequested || isSheetScopedPostpaid || hasChunkedWindow;
-        const QRS_PER_SHEET = 25;
-        const needsCampaignQrCount =
-            isSheetScopedPostpaid ||
-            (campaign.planType === 'postpaid' && !fastModeRequested);
-        const totalCampaignQrCount = needsCampaignQrCount
-            ? await prisma.qRCode.count({ where: qrWhere })
-            : null;
+        const totalCampaignQrCount =
+            campaign.planType === 'postpaid'
+                ? await prisma.qRCode.count({ where: qrWhere })
+                : null;
+        const effectiveQrCount = Number.isFinite(totalCampaignQrCount)
+            ? totalCampaignQrCount
+            : await prisma.qRCode.count({ where: qrWhere });
+        if (
+            !isSheetScopedPostpaid &&
+            !hasChunkedWindow &&
+            effectiveQrCount > CAMPAIGN_QR_FULL_DOWNLOAD_LIMIT
+        ) {
+            const recommendedChunkSize = CAMPAIGN_QR_DOWNLOAD_CHUNK_MAX;
+            const recommendedTotalParts = Math.max(
+                1,
+                Math.ceil(effectiveQrCount / recommendedChunkSize)
+            );
+            return res.status(413).json({
+                message: `Campaign has ${effectiveQrCount} QR codes. Use chunked download to avoid timeouts.`,
+                code: 'CAMPAIGN_PDF_TOO_LARGE',
+                totalQrs: effectiveQrCount,
+                recommendedChunkSize,
+                recommendedTotalParts
+            });
+        }
+        const qrsPerSheet =
+            campaign.planType === 'postpaid'
+                ? resolvePostpaidSheetSize(totalCampaignQrCount)
+                : 25;
 
         if (
             isSheetScopedPostpaid &&
             Number.isFinite(totalCampaignQrCount) &&
-            parsedSheetIndex * QRS_PER_SHEET >= totalCampaignQrCount
+            parsedSheetIndex * qrsPerSheet >= totalCampaignQrCount
         ) {
             return res.status(400).json({ message: 'Invalid sheet selected for download' });
         }
@@ -3478,8 +3570,8 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             ...(isSheetScopedPostpaid
                 ? {
-                    skip: parsedSheetIndex * QRS_PER_SHEET,
-                    take: QRS_PER_SHEET
+                    skip: parsedSheetIndex * qrsPerSheet,
+                    take: qrsPerSheet
                 }
                 : hasChunkedWindow
                     ? {
@@ -3513,7 +3605,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         const totalSheetCountForPdf =
             campaign.planType === 'postpaid'
                 ? Number.isFinite(totalCampaignQrCount)
-                    ? Math.max(1, Math.ceil(totalCampaignQrCount / QRS_PER_SHEET))
+                    ? Math.max(1, Math.ceil(totalCampaignQrCount / qrsPerSheet))
                     : undefined
                 : undefined;
         const downloadSheetLabel =
@@ -3540,9 +3632,10 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             startSheetIndex: isSheetScopedPostpaid
                 ? parsedSheetIndex
                 : (campaign.planType === 'postpaid' && hasChunkedWindow
-                    ? Math.floor(safeOffset / QRS_PER_SHEET)
+                    ? Math.floor(safeOffset / qrsPerSheet)
                     : 0),
-            totalSheetCount: totalSheetCountForPdf
+            totalSheetCount: totalSheetCountForPdf,
+            qrsPerSheet
         });
         mark('pdfReady');
 
@@ -3564,6 +3657,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         res.setHeader('X-PDF-Fast-Mode', fastModeRequested ? '1' : '0');
         res.setHeader('X-PDF-Skip-Logo', shouldSkipBrandLogo ? '1' : '0');
         res.setHeader('X-PDF-QR-Count', String(normalizedQrCodes.length));
+        res.setHeader('X-PDF-QRS-PER-SHEET', String(qrsPerSheet));
         res.setHeader('X-PDF-Chunked', hasChunkedWindow ? '1' : '0');
         res.setHeader('X-PDF-Chunk-Offset', String(hasChunkedWindow ? safeOffset : 0));
         res.setHeader('X-PDF-Chunk-Limit', String(hasChunkedWindow ? safeLimit : normalizedQrCodes.length));
@@ -3583,6 +3677,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             entityId: campaignId,
             metadata: {
                 qrCount: normalizedQrCodes.length,
+                qrsPerSheet,
                 sheetIndex: isSheetScopedPostpaid ? parsedSheetIndex : null,
                 chunked: hasChunkedWindow,
                 chunkOffset: hasChunkedWindow ? safeOffset : null,
@@ -3611,6 +3706,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                         tab: 'campaigns',
                         campaignId,
                         qrCount: normalizedQrCodes.length,
+                        qrsPerSheet,
                         sheetIndex: isSheetScopedPostpaid ? parsedSheetIndex : null,
                         chunked: hasChunkedWindow,
                         chunkPart: hasChunkedWindow ? chunkPartNumber : null,

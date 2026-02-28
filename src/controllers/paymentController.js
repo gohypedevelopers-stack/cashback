@@ -7,6 +7,9 @@ const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '')
 const isValidUpiId = (value) => /^[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}$/.test(value || '');
 const isValidAccountNumber = (value) => /^[0-9]{9,18}$/.test(value || '');
 const isValidIfsc = (value) => /^[A-Z]{4}0[A-Z0-9]{6}$/.test(value || '');
+const MAX_RAZORPAY_ORDER_AMOUNT_INR = Number(
+    process.env.RAZORPAY_MAX_ORDER_AMOUNT_INR || 500000
+);
 
 const buildBankPayoutLabel = ({ bankName, accountHolderName, accountNumber, ifsc }) => {
     const suffix = accountNumber.slice(-4);
@@ -331,9 +334,23 @@ exports.getWithdrawalHistory = async (req, res) => {
 exports.createOrder = async (req, res) => {
     try {
         const { amount, currency = "INR", receipt, notes } = req.body;
+        if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(503).json({
+                message: "Payment gateway is not configured. Please contact support."
+            });
+        }
+
         const numericAmount = Number(amount);
         if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
             return res.status(400).json({ message: "Invalid amount" });
+        }
+        if (
+            Number.isFinite(MAX_RAZORPAY_ORDER_AMOUNT_INR) &&
+            numericAmount > MAX_RAZORPAY_ORDER_AMOUNT_INR
+        ) {
+            return res.status(400).json({
+                message: `Maximum single payment is INR ${MAX_RAZORPAY_ORDER_AMOUNT_INR.toLocaleString('en-IN')}. Please split into multiple payments.`
+            });
         }
 
         const options = {
@@ -347,7 +364,7 @@ exports.createOrder = async (req, res) => {
         res.json(order);
     } catch (error) {
         console.error("[Razorpay Error]", error);
-        const statusCode = error.statusCode || 500;
+        const statusCode = error.statusCode || (error?.error ? 400 : 500);
         const message = error.error && error.error.description
             ? error.error.description
             : (error.message || "Something went wrong");
