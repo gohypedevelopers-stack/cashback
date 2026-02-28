@@ -4148,7 +4148,11 @@ exports.getVendorCustomers = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const { page, limit } = parsePagination(req, { defaultLimit: 25, maxLimit: 200 });
-        const where = buildRedemptionEventWhere(vendor, req.query);
+
+        // Strip city/state from DB query — those fields are mostly null in RedemptionEvent.
+        // We filter on the aggregated firstScanLocation string post-processing instead.
+        const { city: filterCity, state: filterState, ...dbQueryParams } = req.query;
+        const where = buildRedemptionEventWhere(vendor, dbQueryParams);
         where.type = 'redeem_success';
         where.userId = { not: null };
 
@@ -4190,9 +4194,18 @@ exports.getVendorCustomers = async (req, res) => {
             rewardsEarned: toNumber(entry.rewardsEarned, 0)
         }));
 
+        // Post-processing filters on aggregated data
         if (req.query.mobile) {
             const needle = String(req.query.mobile).trim();
             customers = customers.filter((entry) => String(entry.mobile || '').includes(needle));
+        }
+        if (filterCity) {
+            const cityNeedle = String(filterCity).trim().toLowerCase();
+            customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(cityNeedle));
+        }
+        if (filterState) {
+            const stateNeedle = String(filterState).trim().toLowerCase();
+            customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(stateNeedle));
         }
 
         const total = customers.length;
