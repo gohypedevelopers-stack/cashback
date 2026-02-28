@@ -131,6 +131,55 @@ exports.getHomeData = async (req, res) => {
                 .filter((banner) => banner.title || banner.subtitle || banner.img)
             : [];
 
+        // Get active campaigns
+        const activeCampaigns = await prisma.campaign.findMany({
+            where: {
+                status: 'active',
+                // endDate: { gt: new Date() } // Relaxing this just in case timezone causes issues
+            },
+            include: {
+                Product: true,
+                Brand: true
+            },
+            orderBy: {
+                cashbackAmount: 'desc'
+            }
+        });
+
+        // Resolve top offers (mapped to products)
+        const topOffers = [];
+        for (const camp of activeCampaigns) {
+            
+            // If the campaign has no productId, use brand as top offer, else use product
+            const entityId = camp.productId || camp.brandId;
+            const entityName = camp.Product ? camp.Product.name : (camp.Brand ? camp.Brand.name : 'Offer');
+            const logoUrl = camp.Product?.imageUrl || camp.Brand?.logoUrl || '';
+            const brandName = camp.Brand?.name || '';
+            
+            const range = getCampaignCashbackRange(camp, camp.productId);
+            let maxCashback = 0;
+            
+            if (range && range.max > 0) {
+                maxCashback = range.max;
+            } else if (camp.cashbackAmount > 0) {
+                maxCashback = camp.cashbackAmount;
+            } else if (camp.totalBudget > 0 && Array.isArray(camp.allocations) && camp.allocations.length > 0) {
+                // For sheet campaigns, we might just want to show the total budget divided by quantity, or just show a label
+                const qty = camp.allocations[0].quantity || 1;
+                maxCashback = camp.totalBudget / qty;
+            }
+
+            // Always display active campaigns; if we can't determine a number, default to 0 to show "Offer"
+            topOffers.push({
+                id: entityId,
+                brandId: camp.brandId,
+                name: entityName,
+                logoUrl: logoUrl,
+                brandName: brandName,
+                maxCashback: maxCashback || 0
+            });
+        }
+
         const brands = await prisma.brand.findMany({
             where: { status: 'active' },
             take: 6,
@@ -142,7 +191,7 @@ exports.getHomeData = async (req, res) => {
                 _count: { select: { Products: true } }
             }
         });
-        // Flatten _count for the frontend
+
         const brandsWithCount = brands.map(b => ({
             ...b,
             banner: b.logoUrl,
@@ -169,6 +218,7 @@ exports.getHomeData = async (req, res) => {
         res.json({
             banners,
             brands: brandsWithCount,
+            topOffers: topOffers.slice(0, 10), // Send up to 10 top offers
             featuredProducts,
             featuredCoupons,
             stats: { productsOwned: 0, productsReported: 0 } // Placeholders for guest
