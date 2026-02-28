@@ -1,6 +1,11 @@
 ﻿const prisma = require('../config/prismaClient');
 const { safeLogActivity } = require('../utils/activityLogger');
-const { spendLocked } = require('../services/walletService');
+const {
+    spendLocked,
+    chargeFee,
+    ensureVendorWallet,
+    getAvailableBalance
+} = require('../services/walletService');
 
 const ACTIVE_QR_STATUSES = new Set(['funded', 'generated', 'assigned', 'active']);
 
@@ -105,10 +110,28 @@ const validateQrForRedemption = (qr) => {
 
     const amount = toPositiveAmount(qr.cashbackAmount) || toPositiveAmount(qr.Campaign.cashbackAmount);
     if (!amount) {
-        throw createHttpError('Invalid cashback amount for this QR', 400);
+        throw createHttpError('QR Code is not valid', 400);
     }
 
     return amount;
+};
+
+const isPostpaidCampaign = (qr) =>
+    String(qr?.Campaign?.planType || '').toLowerCase() === 'postpaid';
+
+const assertVendorHasPostpaidBalance = async (tx, vendorId, amount) => {
+    if (!vendorId) {
+        throw createHttpError('QR Code is not valid (Insufficient Vendor Balance)', 400);
+    }
+
+    const wallet = await ensureVendorWallet(tx, vendorId);
+    const availableBalance = Number(getAvailableBalance(wallet) || 0);
+
+    if (availableBalance < amount) {
+        throw createHttpError('QR Code is not valid (Insufficient Vendor Balance)', 400);
+    }
+
+    return wallet;
 };
 
 exports.scanAndRedeem = async (req, res) => {
@@ -137,7 +160,10 @@ exports.scanAndRedeem = async (req, res) => {
         }
 
         try {
-            validateQrForRedemption(previewQr);
+            const previewAmount = validateQrForRedemption(previewQr);
+            if (isPostpaidCampaign(previewQr)) {
+                await assertVendorHasPostpaidBalance(prisma, previewQr.vendorId, previewAmount);
+            }
         } catch (validationError) {
             const eventType = validationError.status === 409 ? 'already_redeemed' : 'invalid';
             await prisma.redemptionEvent.create({
@@ -175,7 +201,66 @@ exports.scanAndRedeem = async (req, res) => {
 
             const cashbackAmount = validateQrForRedemption(qr);
 
-            if (qr.campaignBudgetId) {
+            if (isPostpaidCampaign(qr)) {
+                const campaignBudget = qr.campaignBudgetId
+                    ? await tx.campaignBudget.findUnique({
+                        where: { id: qr.campaignBudgetId }
+                    })
+                    : null;
+
+                const hasLockedBudget =
+                    campaignBudget &&
+                    campaignBudget.status === 'active' &&
+                    Number(campaignBudget.lockedAmount || 0) >= cashbackAmount;
+
+                if (hasLockedBudget) {
+                    await spendLocked(tx, qr.vendorId, cashbackAmount, {
+                        referenceId: hash,
+                        campaignBudgetId: campaignBudget.id,
+                        qrId: qr.id,
+                        description: `Cashback spent for redemption in campaign ${qr.Campaign.title}`,
+                        metadata: {
+                            campaignId: qr.campaignId,
+                            qrHash: hash,
+                            mode: 'postpaid_locked_fallback'
+                        }
+                    });
+
+                    const nextLocked = Number(campaignBudget.lockedAmount || 0) - cashbackAmount;
+                    await tx.campaignBudget.update({
+                        where: { id: campaignBudget.id },
+                        data: {
+                            spentAmount: { increment: cashbackAmount },
+                            lockedAmount: { decrement: cashbackAmount },
+                            status: nextLocked <= 0 ? 'closed' : campaignBudget.status
+                        }
+                    });
+                } else {
+                    await assertVendorHasPostpaidBalance(tx, qr.vendorId, cashbackAmount);
+
+                    await chargeFee(tx, qr.vendorId, cashbackAmount, {
+                        referenceId: hash,
+                        campaignBudgetId: campaignBudget?.id || null,
+                        qrId: qr.id,
+                        category: 'qr_purchase',
+                        description: `Postpaid QR redemption debit for campaign ${qr.Campaign.title}`,
+                        metadata: {
+                            campaignId: qr.campaignId,
+                            qrHash: hash,
+                            mode: 'postpaid_scan_debit'
+                        }
+                    });
+
+                    if (campaignBudget?.id) {
+                        await tx.campaignBudget.update({
+                            where: { id: campaignBudget.id },
+                            data: {
+                                spentAmount: { increment: cashbackAmount }
+                            }
+                        });
+                    }
+                }
+            } else if (qr.campaignBudgetId) {
                 const campaignBudget = await tx.campaignBudget.findUnique({
                     where: { id: qr.campaignBudgetId }
                 });
@@ -410,6 +495,21 @@ exports.verifyQR = async (req, res) => {
         }
 
         const amount = toPositiveAmount(qr.cashbackAmount) || toPositiveAmount(qr.Campaign.cashbackAmount) || 0;
+        if (!amount) {
+            return res.status(400).json({ message: 'QR Code is not valid', status: qr.status, qr });
+        }
+
+        if (isPostpaidCampaign(qr)) {
+            try {
+                await assertVendorHasPostpaidBalance(prisma, qr.vendorId, amount);
+            } catch (balanceError) {
+                return res.status(balanceError.status || 400).json({
+                    message: balanceError.message,
+                    status: qr.status,
+                    qr
+                });
+            }
+        }
 
         await prisma.redemptionEvent.create({
             data: {

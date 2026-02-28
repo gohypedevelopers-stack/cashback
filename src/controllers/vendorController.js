@@ -1252,53 +1252,19 @@ exports.getVendorCampaigns = async (req, res) => {
                         index: sheetIndex,
                         label,
                         count: chunk.length,
-                        amount
+                        amount,
+                        assignedTotal: toNumber(amount * chunk.length, 0),
+                        isPaid: false
                     });
                 }
 
-                // IMPORTANT: show only PAID sheet amounts in active postpaid view.
-                // Assigned cashback on QRs is not considered paid until lock_funds is recorded for that sheet.
-                const lockTransactions = await prisma.transaction.findMany({
-                    where: {
-                        referenceId: camp.id,
-                        category: 'lock_funds',
-                        status: 'success'
-                    },
-                    select: {
-                        amount: true,
-                        metadata: true
-                    }
-                });
-
-                const paidBySheet = new Map();
-                lockTransactions.forEach((tx) => {
-                    const sheetIndexRaw = tx?.metadata?.sheetIndex;
-                    const sheetIndex = Number.parseInt(sheetIndexRaw, 10);
-                    if (!Number.isFinite(sheetIndex) || sheetIndex < 0) return;
-
-                    const prev = toNumber(paidBySheet.get(sheetIndex), 0);
-                    const next = toNumber(prev + toNumber(tx?.amount, 0), 0);
-                    paidBySheet.set(sheetIndex, next);
-                });
-
-                const paidSheets = sheets.map((sheet) => {
-                    const paidTotal = toNumber(paidBySheet.get(sheet.index), 0);
-                    const paidRate = sheet.count > 0 ? toNumber(paidTotal / sheet.count, 0) : 0;
-                    return {
-                        ...sheet,
-                        amount: paidRate,
-                        paidTotal,
-                        isPaid: paidTotal > 0
-                    };
-                });
-
                 const totalBudgetFromSheets = toNumber(
-                    paidSheets.reduce((sum, s) => sum + toNumber(s.paidTotal, 0), 0),
+                    sheets.reduce((sum, sheet) => sum + toNumber(sheet.assignedTotal, 0), 0),
                     0
                 );
                 return {
                     ...camp,
-                    sheets: paidSheets,
+                    sheets,
                     subtotal: totalBudgetFromSheets,
                     totalBudget: totalBudgetFromSheets
                 };
@@ -3297,31 +3263,6 @@ exports.assignSheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Sheet cashback assignment is only available for postpaid campaigns' });
         }
 
-        const priorSheetLocks = await prisma.transaction.findMany({
-            where: {
-                referenceId: campaignId,
-                category: 'lock_funds',
-                status: 'success'
-            },
-            select: {
-                amount: true,
-                metadata: true
-            }
-        });
-
-        const isAlreadyPaidSheet = priorSheetLocks.some((sheetTx) => {
-            const sheetIdx = Number.parseInt(sheetTx?.metadata?.sheetIndex, 10);
-            if (!Number.isFinite(sheetIdx) || sheetIdx < 0) return false;
-            if (sheetIdx !== parsedSheet) return false;
-            return toNumber(sheetTx?.amount, 0) > 0;
-        });
-
-        if (isAlreadyPaidSheet) {
-            return res.status(400).json({
-                message: 'Sheet already paid. Cashback can be assigned only once per sheet.'
-            });
-        }
-
         // Get all campaign QRs ordered by creation to determine sheet position
         const allQrs = await prisma.qRCode.findMany({
             where: {
@@ -3392,427 +3333,48 @@ exports.paySheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Invalid cashback amount' });
         }
 
-        const result = await prisma.$transaction(async (tx) => {
-            const { vendor, wallet } = await ensureVendorAndWallet(req.user.id, tx);
-
-            const campaign = await tx.campaign.findUnique({
-                where: { id: campaignId },
-                include: { Brand: true }
-            });
-
-            if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
-                throw new Error('Campaign not found');
-            }
-            if (campaign.planType !== 'postpaid') {
-                throw new Error('Sheet payment is only for postpaid campaigns');
-            }
-
-            // Calculate total for this sheet
-            const QRS_PER_SHEET = 25;
-            const allQrsCount = await tx.qRCode.count({
-                where: { campaignId, status: { in: ['funded', 'generated', 'active', 'assigned'] } }
-            });
-
-            const start = parsedSheet * QRS_PER_SHEET;
-            const end = start + QRS_PER_SHEET;
-            const sheetQrCount = Math.max(0, Math.min(QRS_PER_SHEET, allQrsCount - start));
-
-            if (sheetQrCount <= 0) {
-                throw new Error('No QR codes found for this sheet');
-            }
-
-            // 1. Cashback Total for this sheet (new desired total)
-            const newCashbackTotal = toNumber(parsedAmount * sheetQrCount, 0);
-
-            // 2. Tech Fee (QR generation fee) — Charged for TOTAL campaign volume differentially
-            const printCostPerQr = resolveTechFeePerQr({
-                vendor,
-                brand: campaign.Brand
-            });
-            const campaignTechFeeSubtotal = toNumber(printCostPerQr * allQrsCount, 0);
-
-            // 3. Voucher Fee — Charged for TOTAL campaign volume differentially
-            const VOUCHER_FEE_MAP = { digital_voucher: 0.20, printed_qr: 0.50, none: 0 };
-            const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[campaign.voucherType] || 0, 0);
-            const campaignVoucherFeeSubtotal = toNumber(allQrsCount * voucherFeePerQr, 0);
-            const campaignTechFeeTax = toNumber(campaignTechFeeSubtotal * INVOICE_GST_RATE, 0);
-            const campaignVoucherFeeTax = toNumber(campaignVoucherFeeSubtotal * INVOICE_GST_RATE, 0);
-            const campaignTechFeeTotal = toNumber(campaignTechFeeSubtotal + campaignTechFeeTax, 0);
-            const campaignVoucherFeeTotal = toNumber(campaignVoucherFeeSubtotal + campaignVoucherFeeTax, 0);
-            const campaignFeesTotal = toNumber(campaignTechFeeTotal + campaignVoucherFeeTotal, 0);
-
-            // Ensure budget exists
-            let campaignBudget = await tx.campaignBudget.findFirst({
-                where: { campaignId, status: 'active' }
-            });
-
-            if (!campaignBudget) {
-                campaignBudget = await tx.campaignBudget.create({
-                    data: {
-                        campaignId,
-                        vendorId: vendor.id,
-                        initialLockedAmount: 0,
-                        lockedAmount: 0,
-                        spentAmount: 0,
-                        status: 'active'
-                    }
-                });
-            }
-
-            // --- CHECK EXISTING INVOICE FOR PRIOR PAYMENTS ---
-            const sheetName = `Sheet ${parsedSheet + 1}`;
-            // Helpers to match items more robustly
-            // Helpers to match items more robustly (inclusive of legacy labels)
-            const isCashbackForSheet = (label) => {
-                if (!label) return false;
-                const l = label.toLowerCase();
-                return l.includes('cashback') && l.includes(sheetName.toLowerCase());
-            };
-            const isTechFeeForCampaign = (label) => {
-                if (!label) return false;
-                const l = label.toLowerCase();
-                return l.includes('qr generation fee') || l.includes('technology fee');
-            };
-            const isVoucherFeeForCampaign = (label) => {
-                if (!label) return false;
-                const l = label.toLowerCase();
-                return l.includes('voucher fee');
-            };
-
-            let existingInvoice = await tx.invoice.findFirst({
-                where: {
-                    vendorId: vendor.id,
-                    campaignBudgetId: campaignBudget.id,
-                    type: 'FEE_TAX_INVOICE',
-                    status: 'issued'
-                },
-                include: { Items: true },
-                orderBy: { createdAt: 'desc' }
-            });
-
-            // Determine what was already paid
-            let prevCashbackAmount = 0;
-
-            // Source-of-truth for sheet cashback already paid: successful lock_funds for this sheet.
-            // This avoids over/under charge if invoice status/labels drift.
-            const priorSheetLocks = await tx.transaction.findMany({
-                where: {
-                    referenceId: campaignId,
-                    category: 'lock_funds',
-                    status: 'success'
-                },
-                select: {
-                    amount: true,
-                    metadata: true
-                }
-            });
-
-            priorSheetLocks.forEach((sheetTx) => {
-                const sheetIndex = Number.parseInt(sheetTx?.metadata?.sheetIndex, 10);
-                if (!Number.isFinite(sheetIndex) || sheetIndex < 0) return;
-                if (sheetIndex !== parsedSheet) return;
-                prevCashbackAmount = toNumber(
-                    prevCashbackAmount + toNumber(sheetTx?.amount, 0),
-                    0
-                );
-            });
-
-            if (prevCashbackAmount > 0) {
-                const aggregate = await tx.qRCode.aggregate({
-                    where: { campaignId },
-                    _sum: { cashbackAmount: true }
-                });
-                const totalCashback = Number(aggregate._sum.cashbackAmount || 0);
-
-                return {
-                    totalPaid: 0,
-                    sheetQrCount,
-                    techFeeTotal: 0,
-                    voucherFeeTotal: 0,
-                    cashbackTotal: 0,
-                    campaignTotalBudget: totalCashback,
-                    campaignTitle: campaign.title,
-                    invoice: existingInvoice,
-                    invoiceId: existingInvoice?.id,
-                    message: 'Sheet already paid. Recharge is allowed only once per sheet.'
-                };
-            }
-
-            const priorFeeCharges = await tx.transaction.findMany({
-                where: {
-                    referenceId: campaignId,
-                    category: 'tech_fee_charge',
-                    status: 'success'
-                },
-                select: { amount: true }
-            });
-            const prevFeesPaidTotal = toNumber(
-                priorFeeCharges.reduce(
-                    (sum, feeTx) => sum + toNumber(feeTx?.amount, 0),
-                    0
-                ),
-                0
-            );
-
-            // Calculate differentials
-            const cashbackDiff = Math.max(
-                0,
-                toNumber(newCashbackTotal - prevCashbackAmount, 0)
-            );
-
-            const feesDiffTotal = Math.max(
-                0,
-                toNumber(campaignFeesTotal - prevFeesPaidTotal, 0)
-            );
-
-            const totalToPay = toNumber(cashbackDiff + feesDiffTotal, 0);
-
-            // Ensure we have the current campaign budget state for return objects
-            const initialAggregate = await tx.qRCode.aggregate({
-                where: { campaignId },
-                _sum: { cashbackAmount: true }
-            });
-            const totalCashback = Number(initialAggregate._sum.cashbackAmount || 0);
-
-            if (totalToPay <= 0) {
-                return {
-                    totalPaid: 0,
-                    sheetQrCount,
-                    techFeeTotal: 0,
-                    voucherFeeTotal: 0,
-                    cashbackTotal: 0,
-                    campaignTotalBudget: totalCashback,
-                    campaignTitle: campaign.title,
-                    invoice: existingInvoice,
-                    invoiceId: existingInvoice?.id,
-                    message: 'Payment already completed for this sheet/amount. No additional charges required.'
-                };
-            }
-
-            if (Number(wallet.balance) < totalToPay) {
-                const error = new Error(`Insufficient wallet balance. Required: Rs. ${totalToPay.toFixed(2)} (Available: Rs. ${Number(wallet.balance).toFixed(2)})`);
-                error.status = 400;
-                throw error;
-            }
-
-            // --- UPSERT INVOICE ITEMS ---
-            const cashbackLabel = `Cashback for ${sheetName} (${sheetQrCount} QRs @ Rs. ${parsedAmount})`;
-            const techFeeLabel = `QR Generation Fee for Campaign (${allQrsCount} QRs)`;
-            const voucherFeeLabel = `Voucher Fee (${campaign.voucherType}) for Campaign (${allQrsCount} QRs)`;
-
-            if (existingInvoice) {
-                // --- Update or create cashback item ---
-                const existingCashbackItem = existingInvoice.Items.find(i => isCashbackForSheet(i.label));
-                if (existingCashbackItem) {
-                    await tx.invoiceItem.update({
-                        where: { id: existingCashbackItem.id },
-                        data: {
-                            label: cashbackLabel,
-                            unitPrice: parsedAmount,
-                            amount: newCashbackTotal
-                        }
-                    });
-                } else if (newCashbackTotal > 0) {
-                    await tx.invoiceItem.create({
-                        data: {
-                            invoiceId: existingInvoice.id,
-                            label: cashbackLabel,
-                            qty: sheetQrCount,
-                            unitPrice: parsedAmount,
-                            amount: newCashbackTotal,
-                            taxRate: 0
-                        }
-                    });
-                }
-
-                // --- Update or create consolidated tech fee item ---
-                const existingTechFeeItems = existingInvoice.Items.filter(i => isTechFeeForCampaign(i.label));
-                if (existingTechFeeItems.length > 0) {
-                    // Update the first one, delete the rest (consolidation)
-                    const primary = existingTechFeeItems[0];
-                    await tx.invoiceItem.update({
-                        where: { id: primary.id },
-                        data: {
-                            label: techFeeLabel,
-                            qty: allQrsCount,
-                            unitPrice: printCostPerQr,
-                            amount: campaignTechFeeSubtotal,
-                            taxRate: INVOICE_GST_RATE * 100
-                        }
-                    });
-                    if (existingTechFeeItems.length > 1) {
-                        const duplicateIds = existingTechFeeItems.slice(1).map(i => i.id);
-                        await tx.invoiceItem.deleteMany({ where: { id: { in: duplicateIds } } });
-                    }
-                } else if (campaignTechFeeSubtotal > 0) {
-                    await tx.invoiceItem.create({
-                        data: {
-                            invoiceId: existingInvoice.id,
-                            label: techFeeLabel,
-                            qty: allQrsCount,
-                            unitPrice: printCostPerQr,
-                            amount: campaignTechFeeSubtotal,
-                            taxRate: INVOICE_GST_RATE * 100
-                        }
-                    });
-                }
-
-                // --- Update or create consolidated voucher fee item ---
-                const existingVoucherFeeItems = existingInvoice.Items.filter(i => isVoucherFeeForCampaign(i.label));
-                if (existingVoucherFeeItems.length > 0) {
-                    const primary = existingVoucherFeeItems[0];
-                    await tx.invoiceItem.update({
-                        where: { id: primary.id },
-                        data: {
-                            label: voucherFeeLabel,
-                            qty: allQrsCount,
-                            unitPrice: voucherFeePerQr,
-                            amount: campaignVoucherFeeSubtotal,
-                            taxRate: INVOICE_GST_RATE * 100
-                        }
-                    });
-                    if (existingVoucherFeeItems.length > 1) {
-                        const duplicateIds = existingVoucherFeeItems.slice(1).map(i => i.id);
-                        await tx.invoiceItem.deleteMany({ where: { id: { in: duplicateIds } } });
-                    }
-                } else if (campaignVoucherFeeSubtotal > 0) {
-                    await tx.invoiceItem.create({
-                        data: {
-                            invoiceId: existingInvoice.id,
-                            label: voucherFeeLabel,
-                            qty: allQrsCount,
-                            unitPrice: voucherFeePerQr,
-                            amount: campaignVoucherFeeSubtotal,
-                            taxRate: INVOICE_GST_RATE * 100
-                        }
-                    });
-                }
-
-                // Recompute invoice totals from current line items to keep totals consistent.
-                const refreshedInvoiceItems = await tx.invoiceItem.findMany({
-                    where: { invoiceId: existingInvoice.id },
-                    select: { amount: true, taxRate: true }
-                });
-                const recomputedSubtotal = toNumber(
-                    refreshedInvoiceItems.reduce(
-                        (sum, item) => sum + toNumber(item?.amount, 0),
-                        0
-                    ),
-                    0
-                );
-                const recomputedTax = toNumber(
-                    refreshedInvoiceItems.reduce((sum, item) => {
-                        const base = toNumber(item?.amount, 0);
-                        const rate = toNumber(item?.taxRate, 0);
-                        return sum + toNumber(base * (rate / 100), 0);
-                    }, 0),
-                    0
-                );
-                await tx.invoice.update({
-                    where: { id: existingInvoice.id },
-                    data: {
-                        subtotal: recomputedSubtotal,
-                        tax: recomputedTax,
-                        total: toNumber(recomputedSubtotal + recomputedTax, 0)
-                    }
-                });
-            } else {
-                // Fallback: create new invoice with all items
-                const items = [];
-                if (newCashbackTotal > 0) {
-                    items.push({ label: cashbackLabel, qty: sheetQrCount, unitPrice: parsedAmount, amount: newCashbackTotal, taxRate: 0 });
-                }
-                if (campaignTechFeeSubtotal > 0) {
-                    items.push({ label: techFeeLabel, qty: allQrsCount, unitPrice: printCostPerQr, amount: campaignTechFeeSubtotal, taxRate: INVOICE_GST_RATE * 100 });
-                }
-                if (campaignVoucherFeeSubtotal > 0) {
-                    items.push({ label: voucherFeeLabel, qty: allQrsCount, unitPrice: voucherFeePerQr, amount: campaignVoucherFeeSubtotal, taxRate: INVOICE_GST_RATE * 100 });
-                }
-
-                existingInvoice = await createFinanceInvoice(tx, {
-                    vendorId: vendor.id,
-                    brandId: campaign.Brand?.id,
-                    campaignBudgetId: campaignBudget.id,
-                    type: 'FEE_TAX_INVOICE',
-                    subtotal: newCashbackTotal + campaignTechFeeSubtotal + campaignVoucherFeeSubtotal,
-                    tax: campaignTechFeeTax + campaignVoucherFeeTax,
-                    label: `Billing for campaign ${campaign.title}`,
-                    items,
-                    metadata: {
-                        campaignId,
-                        sheetsPaid: [parsedSheet],
-                        totalQrs: allQrsCount
-                    }
-                });
-            }
-
-            // --- CHARGE FEES (only remaining differential, incl. GST) ---
-            if (feesDiffTotal > 0) {
-                await chargeFee(tx, vendor.id, feesDiffTotal, {
-                    referenceId: campaign.id,
-                    campaignBudgetId: campaignBudget.id,
-                    invoiceId: existingInvoice.id,
-                    category: 'tech_fee_charge',
-                    description: `Campaign service fees (incl. GST) for ${campaign.title}`,
-                    metadata: {
-                        campaignId,
-                        quantity: allQrsCount,
-                        voucherType: campaign.voucherType
-                    }
-                });
-            }
-
-            // --- LOCK CASHBACK (only the differential) ---
-            if (cashbackDiff > 0) {
-                await lock(tx, vendor.id, cashbackDiff, {
-                    referenceId: campaign.id,
-                    campaignBudgetId: campaignBudget.id,
-                    invoiceId: existingInvoice.id,
-                    description: `Cashback locked for ${sheetName}`,
-                    metadata: { campaignId, sheetIndex: parsedSheet }
-                });
-
-                // Update budget total
-                await tx.campaignBudget.update({
-                    where: { id: campaignBudget.id },
-                    data: {
-                        lockedAmount: { increment: cashbackDiff },
-                        initialLockedAmount: { increment: cashbackDiff }
-                    }
-                });
-            }
-
-            // Ensure Campaign.subtotal/totalBudget are also updated to match current state
-            const finalAggregate = await tx.qRCode.aggregate({
-                where: { campaignId },
-                _sum: { cashbackAmount: true }
-            });
-            const finalTotalCashback = Number(finalAggregate._sum.cashbackAmount || 0);
-
-            await tx.campaign.update({
-                where: { id: campaignId },
-                data: {
-                    subtotal: finalTotalCashback,
-                    totalBudget: finalTotalCashback
-                }
-            });
-
-            return {
-                totalPaid: totalToPay,
-                sheetQrCount,
-                techFeeTotal: feesDiffTotal,
-                voucherFeeTotal: 0,
-                cashbackTotal: cashbackDiff,
-                campaignTotalBudget: finalTotalCashback,
-                campaignTitle: campaign.title,
-                invoice: existingInvoice,
-                invoiceId: existingInvoice?.id
-            };
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: { Brand: true }
         });
 
-        res.json({
-            message: result.message || `Successfully paid Rs. ${result.totalPaid.toFixed(2)} for ${result.sheetQrCount} QRs.`,
-            ...result
+        if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+
+        if (campaign.planType !== 'postpaid') {
+            return res.status(400).json({ message: 'Sheet payment is only for postpaid campaigns' });
+        }
+
+        const QRS_PER_SHEET = 25;
+        const allQrsCount = await prisma.qRCode.count({
+            where: { campaignId, status: { in: ['funded', 'generated', 'active', 'assigned'] } }
+        });
+        const start = parsedSheet * QRS_PER_SHEET;
+        const sheetQrCount = Math.max(0, Math.min(QRS_PER_SHEET, allQrsCount - start));
+
+        if (sheetQrCount <= 0) {
+            return res.status(400).json({ message: 'No QR codes found for this sheet' });
+        }
+
+        const aggregate = await prisma.qRCode.aggregate({
+            where: { campaignId },
+            _sum: { cashbackAmount: true }
+        });
+        const campaignTotalBudget = Number(aggregate?._sum?.cashbackAmount || 0);
+
+        return res.json({
+            message: 'No upfront payment required. Sheet cashback is saved and vendor wallet will be charged only on QR redemption.',
+            totalPaid: 0,
+            sheetQrCount,
+            techFeeTotal: 0,
+            voucherFeeTotal: 0,
+            cashbackTotal: 0,
+            campaignTotalBudget,
+            campaignTitle: campaign.title,
+            invoice: null,
+            invoiceId: null
         });
 
     } catch (error) {
@@ -3940,61 +3502,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         }
         const normalizedQrCodes = Array.isArray(qrCodes) ? qrCodes.map((item) => ({ ...item })) : [];
 
-        // For postpaid campaigns, use paid sheet lock transactions as source-of-truth for PDF display.
-        // In fast mode, skip this expensive remap to keep sheet download latency minimal.
-        if (campaign.planType === 'postpaid' && !fastModeRequested) {
-            const lockTransactions = await prisma.transaction.findMany({
-                where: {
-                    referenceId: campaignId,
-                    category: 'lock_funds',
-                    status: 'success'
-                },
-                select: {
-                    amount: true,
-                    metadata: true
-                }
-            });
-
-            const paidBySheet = new Map();
-            lockTransactions.forEach((tx) => {
-                const sheetIndex = Number.parseInt(tx?.metadata?.sheetIndex, 10);
-                if (!Number.isFinite(sheetIndex) || sheetIndex < 0) return;
-                const prev = Number(paidBySheet.get(sheetIndex) || 0);
-                const next = toNumber(prev + toNumber(tx?.amount, 0), 0);
-                paidBySheet.set(sheetIndex, next);
-            });
-
-            if (isSheetScopedPostpaid) {
-                const sheetCount = normalizedQrCodes.length;
-                const paidTotal = toNumber(paidBySheet.get(parsedSheetIndex), 0);
-                const perQrCashback =
-                    paidTotal > 0 && sheetCount > 0
-                        ? toNumber(paidTotal / sheetCount, 0)
-                        : 0;
-
-                normalizedQrCodes.forEach((qr) => {
-                    qr.cashbackAmount = perQrCashback;
-                });
-            } else {
-                const qrBaseOffset = hasChunkedWindow ? safeOffset : 0;
-                normalizedQrCodes.forEach((qr, index) => {
-                    const globalIndex = qrBaseOffset + index;
-                    const sheetIndex = Math.floor(globalIndex / QRS_PER_SHEET);
-                    const indexInSheet = globalIndex % QRS_PER_SHEET;
-                    const sheetCount = Math.min(
-                        QRS_PER_SHEET - indexInSheet,
-                        normalizedQrCodes.length - index
-                    );
-                    const paidTotal = toNumber(paidBySheet.get(sheetIndex), 0);
-                    if (paidTotal > 0 && sheetCount > 0) {
-                        qr.cashbackAmount = toNumber(paidTotal / sheetCount, 0);
-                    } else {
-                        // Unpaid sheets must not display assigned cashback in downloaded PDF.
-                        qr.cashbackAmount = 0;
-                    }
-                });
-            }
-        }
+        // Postpaid PDFs now show assigned QR cashback directly.
         const productName = fastModeRequested
             ? campaign?.Product?.name || null
             : await resolveCampaignProductName(campaign);
