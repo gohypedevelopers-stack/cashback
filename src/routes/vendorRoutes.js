@@ -52,8 +52,6 @@ const {
     shareVendorInvoice,
     createVendorSupportTicket,
     getVendorSupportTickets,
-    getVendorProductReports,
-    downloadVendorProductReport,
     assignSheetCashback,
     paySheetCashback
 } = require('../controllers/vendorController');
@@ -134,8 +132,6 @@ restrictedRouter.post('/products/import', importProducts);
 restrictedRouter.get('/products', getVendorProducts);
 restrictedRouter.put('/products/:id', updateProduct);
 restrictedRouter.delete('/products/:id', deleteProduct);
-restrictedRouter.get('/product-reports', getVendorProductReports);
-restrictedRouter.get('/product-reports/:id/download', downloadVendorProductReport);
 
 // Billing
 restrictedRouter.get('/invoices', getVendorInvoices);
