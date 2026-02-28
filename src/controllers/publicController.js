@@ -187,7 +187,6 @@ exports.getHomeData = async (req, res) => {
                 id: true,
                 name: true,
                 logoUrl: true,
-                about: true,
                 _count: { select: { Products: true } }
             }
         });
