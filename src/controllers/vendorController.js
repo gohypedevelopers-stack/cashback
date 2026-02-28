@@ -4262,11 +4262,17 @@ exports.getVendorCustomers = async (req, res) => {
         });
 
         const customerMap = new Map();
+        // Track first lat/lng per customer for reverse geocoding
+        const customerCoords = new Map();
+
         events.forEach((event) => {
             const userId = event.userId;
             if (!userId) return;
             const existing = customerMap.get(userId);
             const amount = Number(event.amount || 0);
+            const locationParts = [event.city, event.state, event.pincode].filter(Boolean);
+            const locationStr = locationParts.length > 0 ? locationParts.join(', ') : '';
+
             if (!existing) {
                 customerMap.set(userId, {
                     userId,
@@ -4274,10 +4280,18 @@ exports.getVendorCustomers = async (req, res) => {
                     mobile: event.User?.phoneNumber || null,
                     codeCount: 1,
                     rewardsEarned: amount,
-                    firstScanLocation: [event.city, event.state, event.pincode].filter(Boolean).join(', ') || '-',
+                    firstScanLocation: locationStr || '-',
                     memberSince: event.createdAt,
                     lastScanned: event.createdAt
                 });
+                // Store coords for geocoding if no city/state
+                if (!locationStr) {
+                    const lat = Number(event.lat);
+                    const lng = Number(event.lng);
+                    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                        customerCoords.set(userId, { lat, lng, eventId: event.id });
+                    }
+                }
                 return;
             }
             existing.codeCount += 1;
@@ -4289,6 +4303,75 @@ exports.getVendorCustomers = async (req, res) => {
             ...entry,
             rewardsEarned: toNumber(entry.rewardsEarned, 0)
         }));
+
+        // Reverse geocode customers with coordinates but no city name
+        const needsGeocode = customers.filter(
+            (c) => c.firstScanLocation === '-' && customerCoords.has(c.userId)
+        );
+
+        if (needsGeocode.length > 0) {
+            // Deduplicate coordinates (round to 3 decimals)
+            const uniqueCoords = new Map();
+            needsGeocode.forEach((c) => {
+                const coord = customerCoords.get(c.userId);
+                if (!coord) return;
+                const key = `${coord.lat.toFixed(3)}_${coord.lng.toFixed(3)}`;
+                if (!uniqueCoords.has(key)) {
+                    uniqueCoords.set(key, { lat: coord.lat, lng: coord.lng, eventIds: [] });
+                }
+                uniqueCoords.get(key).eventIds.push(coord.eventId);
+            });
+
+            const resolved = new Map();
+            const entries = Array.from(uniqueCoords.entries()).slice(0, 10);
+
+            for (const [key, coord] of entries) {
+                try {
+                    const url = `https://nominatim.openstreetmap.org/reverse?lat=${coord.lat}&lon=${coord.lng}&format=json&zoom=10&accept-language=en`;
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 3000);
+                    const response = await fetch(url, {
+                        headers: { 'User-Agent': 'AssuredRewards/1.0' },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeout);
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const addr = data?.address || {};
+                        const city = addr.city || addr.town || addr.village || addr.suburb || addr.county || '';
+                        const state = addr.state || '';
+                        const parts = [city, state].filter(Boolean);
+                        const locationStr = parts.join(', ') || 'Unknown';
+                        resolved.set(key, { locationStr, city, state });
+
+                        // Persist resolved city/state back to DB (fire-and-forget)
+                        if (city || state) {
+                            prisma.redemptionEvent.updateMany({
+                                where: { id: { in: coord.eventIds } },
+                                data: {
+                                    ...(city ? { city } : {}),
+                                    ...(state ? { state } : {})
+                                }
+                            }).catch(() => { /* ignore */ });
+                        }
+                    }
+                } catch {
+                    // Skip on timeout or error
+                }
+            }
+
+            // Apply resolved locations to customers
+            customers = customers.map((c) => {
+                if (c.firstScanLocation !== '-') return c;
+                const coord = customerCoords.get(c.userId);
+                if (!coord) return c;
+                const key = `${coord.lat.toFixed(3)}_${coord.lng.toFixed(3)}`;
+                const loc = resolved.get(key);
+                if (loc) return { ...c, firstScanLocation: loc.locationStr };
+                return c;
+            });
+        }
 
         // Post-processing filters on aggregated data
         if (req.query.mobile) {
