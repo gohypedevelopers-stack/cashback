@@ -581,7 +581,7 @@ exports.getHomeStats = async (req, res) => {
 
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        const [productsOwned, productsReported, totalEarnedResult] = await Promise.all([
+        const [productsOwned, productsReported, totalEarnedResult, ordersCount] = await Promise.all([
             prisma.qRCode.count({
                 where: { redeemedByUserId: userId, status: 'redeemed' }
             }),
@@ -594,13 +594,22 @@ exports.getHomeStats = async (req, res) => {
                     type: 'credit'
                 },
                 _sum: { amount: true }
-            }) : Promise.resolve({ _sum: { amount: 0 } })
+            }) : Promise.resolve({ _sum: { amount: 0 } }),
+            user.Wallet ? prisma.transaction.count({
+                where: {
+                    walletId: user.Wallet.id,
+                    type: 'debit',
+                    description: { contains: 'Store redeem', mode: 'insensitive' }
+                }
+            }) : Promise.resolve(0)
         ]);
 
         res.json({
             productsOwned,
             productsReported,
-            totalEarned: totalEarnedResult._sum.amount || 0
+            balance: user.Wallet ? Number(user.Wallet.balance) : 0,
+            totalEarned: totalEarnedResult._sum.amount || 0,
+            ordersCount
         });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching home stats', error: error.message });
@@ -656,6 +665,47 @@ exports.redeemStoreProduct = async (req, res) => {
         let walletAfterRedeem = null;
 
         await prisma.$transaction(async (tx) => {
+            // Fetch settings inside transaction to ensure we update the latest stock
+            const settings = await tx.systemSettings.findUnique({
+                where: { id: 'default' },
+                select: { metadata: true }
+            });
+
+            const metadata = settings?.metadata && typeof settings.metadata === 'object'
+                ? settings.metadata
+                : {};
+            const redeemStore = metadata?.redeemStore && typeof metadata.redeemStore === 'object'
+                ? metadata.redeemStore
+                : {};
+            const productsInMeta = Array.isArray(redeemStore.products)
+                ? redeemStore.products
+                : [];
+
+            // Find and update stock in metadata if applicable
+            const productIndex = productsInMeta.findIndex(
+                (p) => String(p.id || p.sku).toLowerCase() === productId.toLowerCase()
+            );
+
+            if (productIndex !== -1) {
+                const p = productsInMeta[productIndex];
+                const currentStock = Number(p.stock);
+                if (Number.isFinite(currentStock)) {
+                    if (currentStock <= 0) {
+                        const outOfStock = new Error('Product is out of stock');
+                        outOfStock.code = 'OUT_OF_STOCK';
+                        throw outOfStock;
+                    }
+                    // Decrement stock in the array
+                    p.stock = currentStock - 1;
+                    
+                    // Save updated metadata
+                    await tx.systemSettings.update({
+                        where: { id: 'default' },
+                        data: { metadata: metadata }
+                    });
+                }
+            }
+
             let wallet = await tx.wallet.findUnique({ where: { userId } });
             if (!wallet) {
                 wallet = await tx.wallet.create({
