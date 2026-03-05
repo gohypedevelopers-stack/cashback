@@ -193,6 +193,21 @@ const getBrandLogoBuffer = async (brandLogoUrl) => {
 };
 
 const buildQrTarget = (uniqueHash) => `${getQrBaseUrl()}/redeem/${uniqueHash}`;
+const isRedeemedQrStatus = (status) => String(status || '').toLowerCase() === 'redeemed';
+
+const resolveSheetHeaderAmount = (sheetQrs = []) => {
+    const pickPositive = (items) =>
+        items
+            .map((item) => Number(item?.cashbackAmount))
+            .find((value) => Number.isFinite(value) && value > 0);
+
+    // Prefer mutable QR value so header follows latest editable sheet value.
+    const mutableAmount = pickPositive(sheetQrs.filter((item) => !isRedeemedQrStatus(item?.status)));
+    if (Number.isFinite(mutableAmount)) return mutableAmount;
+
+    const fallbackAmount = pickPositive(sheetQrs);
+    return Number.isFinite(fallbackAmount) ? fallbackAmount : 0;
+};
 
 const renderQrBuffer = async (uniqueHash, width) => {
     return QRCode.toBuffer(buildQrTarget(uniqueHash), {
@@ -302,11 +317,8 @@ async function generateQrPdf({
                         // --- Header ---
                         let yPos = 20;
 
-                        // Cashback amount for this logical sheet (pick first positive value, fallback 0)
-                        const sheetCashback =
-                            sheetQrs
-                                .map((item) => Number(item?.cashbackAmount))
-                                .find((value) => Number.isFinite(value) && value > 0) || 0;
+                        // Show latest mutable sheet value; redeemed-only sheet falls back to historical value.
+                        const sheetCashback = resolveSheetHeaderAmount(sheetQrs);
                         if (sheetCashback > 0) {
                             doc.fontSize(11).font('Helvetica-Bold').fillColor('#10b981');
                             doc.text(`Rs. ${sheetCashback.toFixed(0)}`, 30, yPos, { width: 120, align: 'left' });
@@ -384,12 +396,23 @@ async function generateQrPdf({
                             });
 
                             const qrCashback = Number(qr?.cashbackAmount) || 0;
-                            if (qrCashback > 0) {
-                                doc.fontSize(8).font('Helvetica');
-                                doc.text(`Rs. ${qrCashback.toFixed(0)}`, currentX, labelY + 10, {
-                                    width: cellWidth,
-                                    align: 'center'
-                                });
+                            const isRedeemed = isRedeemedQrStatus(qr?.status);
+                            if (qrCashback > 0 || isRedeemed) {
+                                const valueLabel = qrCashback > 0 ? `Rs. ${qrCashback.toFixed(0)}` : 'Rs. 0';
+                                doc
+                                    .fontSize(isRedeemed ? 7 : 8)
+                                    .font(isRedeemed ? 'Helvetica-Bold' : 'Helvetica')
+                                    .fillColor(isRedeemed ? '#b45309' : 'black');
+                                doc.text(
+                                    isRedeemed ? `${valueLabel} (Redeemed)` : valueLabel,
+                                    currentX,
+                                    labelY + 10,
+                                    {
+                                        width: cellWidth,
+                                        align: 'center'
+                                    }
+                                );
+                                doc.fillColor('black');
                             }
                         }
                     }

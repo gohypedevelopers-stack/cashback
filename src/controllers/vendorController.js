@@ -3701,7 +3701,11 @@ exports.downloadCampaignQrPdf = async (req, res) => {
                         take: safeLimit
                     }
                     : {}),
-            select: { uniqueHash: true, cashbackAmount: true }
+            select: {
+                uniqueHash: true,
+                cashbackAmount: true,
+                status: true
+            }
         });
         mark('qrFetch');
 
@@ -3858,85 +3862,50 @@ const maskName = (name) => {
     return name[0] + '***' + name.slice(-1);
 };
 
-// B11: Get Vendor Redemptions (Masked Customer Data)
+// B11: Get Vendor Redemptions
 exports.getVendorRedemptions = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const { page, limit, skip } = parsePagination(req);
-        const { campaignId, startDate, endDate } = req.query;
+        const where = buildRedemptionEventWhere(vendor, req.query);
+        where.type = req.query.type || 'redeem_success';
 
-        // Build filter: Get all redeemed QRs from vendor's campaigns
-        const whereClause = {
-            status: 'redeemed',
-            Campaign: {
-                Brand: { vendorId: vendor.id }
-            }
-        };
-
-        if (campaignId) {
-            whereClause.campaignId = campaignId;
-        }
-
-        if (startDate || endDate) {
-            whereClause.redeemedAt = {};
-            if (startDate) whereClause.redeemedAt.gte = new Date(startDate);
-            if (endDate) whereClause.redeemedAt.lte = new Date(endDate);
-        }
-
-        const [redemptions, total] = await Promise.all([
-            prisma.qRCode.findMany({
-                where: whereClause,
-                skip,
-                take: limit,
-                orderBy: { redeemedAt: 'desc' },
-                include: {
-                    Campaign: {
-                        select: { id: true, title: true }
+        const mobileNeedle = String(req.query.mobile || '').trim();
+        if (mobileNeedle) {
+            where.User = {
+                is: {
+                    phoneNumber: {
+                        contains: mobileNeedle
                     }
                 }
+            };
+        }
+
+        const [events, total] = await Promise.all([
+            prisma.redemptionEvent.findMany({
+                where,
+                skip,
+                take: limit,
+                include: {
+                    QRCode: {
+                        select: { id: true, uniqueHash: true, campaignBudgetId: true }
+                    },
+                    Campaign: {
+                        select: { id: true, title: true }
+                    },
+                    User: {
+                        select: { id: true, name: true, phoneNumber: true }
+                    }
+                },
+                orderBy: { createdAt: 'desc' }
             }),
-            prisma.qRCode.count({ where: whereClause })
+            prisma.redemptionEvent.count({ where })
         ]);
 
-        const userIds = Array.from(
-            new Set(
-                redemptions
-                    .map((qr) => qr.redeemedByUserId)
-                    .filter((id) => id)
-            )
-        );
-
-        const users = userIds.length
-            ? await prisma.user.findMany({
-                where: { id: { in: userIds } },
-                select: { id: true, name: true, phoneNumber: true }
-            })
-            : [];
-
-        const userMap = new Map(users.map((user) => [user.id, user]));
-
-        // Mask customer data
-        const maskedRedemptions = redemptions.map((qr) => {
-            const user = qr.redeemedByUserId ? userMap.get(qr.redeemedByUserId) : null;
-            return {
-                id: qr.id,
-                uniqueHash: qr.uniqueHash.slice(-8), // Only show last 8 chars
-                cashbackAmount: qr.cashbackAmount,
-                redeemedAt: qr.redeemedAt,
-                campaign: {
-                    id: qr.Campaign?.id,
-                    title: qr.Campaign?.title
-                },
-                customer: {
-                    id: user?.id?.slice(-6),
-                    name: maskName(user?.name),
-                    phone: maskPhone(user?.phoneNumber)
-                }
-            };
-        });
+        const redemptions = events.map(mapRedemptionEvent);
 
         res.json({
-            redemptions: maskedRedemptions,
+            redemptions,
             pagination: {
                 page,
                 limit,

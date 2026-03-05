@@ -134,11 +134,11 @@ const renderInvoiceToBuffer = (invoice) => {
         const M = 50; // margin
         const CONTENT_W = PAGE_W - M * 2;
 
-        // Colors
-        const GREEN = '#059669';
+        // Muted invoice palette (less saturated green).
+        const GREEN = '#334155';
         const DARK = '#111827';
         const GRAY = '#6B7280';
-        const LIGHT_BG = '#F0FDF4';
+        const LIGHT_BG = '#F1F5F9';
         const WHITE = '#FFFFFF';
 
         // ──────────────── HEADER ────────────────
@@ -341,7 +341,7 @@ const renderInvoiceToBuffer = (invoice) => {
         doc.fillColor(DARK).fontSize(9).font('Helvetica-Bold')
             .text(tax.toFixed(2), summaryX + 110, taxY + 5, { width: 70, align: 'right' });
 
-        // Total (green bg)
+        // Total (accent row)
         const totalY = taxY + rowH;
         doc.rect(summaryX, totalY, summaryW, rowH + 2).fill(GREEN);
         doc.fillColor(WHITE).fontSize(10).font('Helvetica-Bold')
@@ -355,7 +355,7 @@ const renderInvoiceToBuffer = (invoice) => {
 
         if (isReceipt) {
             // DEPOSIT_RECEIPT — payment already received
-            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#F0FDF4');
+            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#E2E8F0');
             doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
                 .text('Amount Paid', summaryX + 10, balY + 6, { width: 100 });
             doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
@@ -369,7 +369,7 @@ const renderInvoiceToBuffer = (invoice) => {
                 .text(formatCurrency(0), summaryX + 80, bal2Y + 7, { width: 100, align: 'right' });
         } else {
             // FEE_TAX_INVOICE — amount already paid from wallet
-            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#F0FDF4');
+            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#E2E8F0');
             doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
                 .text('Amount Paid', summaryX + 10, balY + 6, { width: 100 });
             doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
