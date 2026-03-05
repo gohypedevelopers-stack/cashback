@@ -380,11 +380,32 @@ async function generateQrPdf({
                             const row = Math.floor(i / 5);
                             const currentX = startX + col * cellWidth;
                             const currentY = yPos + row * cellHeight;
+                            const isRedeemed = isRedeemedQrStatus(qr?.status);
+                            const imageX = currentX + (cellWidth - qrSize) / 2;
+                            const imageY = currentY;
 
-                            doc.image(pageBuffers[i], currentX + (cellWidth - qrSize) / 2, currentY, {
+                            doc.image(pageBuffers[i], imageX, imageY, {
                                 width: qrSize,
                                 height: qrSize
                             });
+
+                            if (isRedeemed) {
+                                const badgeWidth = 46;
+                                const badgeHeight = 11;
+                                const badgeX = imageX + 3;
+                                const badgeY = imageY + 3;
+                                doc.roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, 2).fill('#FEF3C7');
+                                doc.roundedRect(badgeX, badgeY, badgeWidth, badgeHeight, 2)
+                                    .lineWidth(0.4)
+                                    .strokeColor('#F59E0B')
+                                    .stroke();
+                                doc.fillColor('#B45309').fontSize(6).font('Helvetica-Bold');
+                                doc.text('CLAIMED', badgeX, badgeY + 2.5, {
+                                    width: badgeWidth,
+                                    align: 'center'
+                                });
+                                doc.fillColor('black');
+                            }
 
                             const withinSheetIndex = pageStart + i + 1;
                             const qrLabel = `${idLetter}${withinSheetIndex}`;
@@ -396,7 +417,6 @@ async function generateQrPdf({
                             });
 
                             const qrCashback = Number(qr?.cashbackAmount) || 0;
-                            const isRedeemed = isRedeemedQrStatus(qr?.status);
                             if (qrCashback > 0 || isRedeemed) {
                                 const valueLabel = qrCashback > 0 ? `Rs. ${qrCashback.toFixed(0)}` : 'Rs. 0';
                                 doc
