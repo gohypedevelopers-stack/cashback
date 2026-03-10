@@ -14,6 +14,7 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const claimRoutes = require('./routes/claimRoutes');
 const path = require('path');
+const { startBulkExportWorker } = require('./services/bulkQrExportService');
 
 const app = express();
 const corsOptions = {
@@ -66,6 +67,7 @@ const startServer = async () => {
     try {
         await prisma.$connect();
         console.log('Database Connected Successfully');
+        startBulkExportWorker();
 
         const PORT = process.env.PORT || 5000;
         app.listen(PORT, () => {

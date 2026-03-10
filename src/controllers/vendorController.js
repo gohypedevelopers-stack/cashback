@@ -12,6 +12,13 @@ const {
     unlockRefund
 } = require('../services/walletService');
 const {
+    getVendorBulkExportArtifact,
+    getVendorBulkExportJob,
+    listVendorBulkExportJobs,
+    queueCampaignExportJob,
+    queueInventoryExportJob
+} = require('../services/bulkQrExportService');
+const {
     allocateInventoryQrs,
     importInventorySeries,
     normalizeSeriesCode,
@@ -106,19 +113,7 @@ const POSTPAID_MUTABLE_QR_STATUS_SET = new Set(POSTPAID_MUTABLE_QR_STATUSES);
 const POSTPAID_REDEEMED_QR_STATUS = 'redeemed';
 
 const toRomanSheetLabel = (value) => {
-    const numerals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
-    const symbols = ['M', 'CM', 'D', 'CD', 'C', 'XC', 'L', 'XL', 'X', 'IX', 'V', 'IV', 'I'];
-    let remaining = Math.max(1, Math.floor(value));
-    let result = '';
-
-    for (let i = 0; i < numerals.length; i += 1) {
-        while (remaining >= numerals[i]) {
-            result += symbols[i];
-            remaining -= numerals[i];
-        }
-    }
-
-    return result;
+    return String(Math.max(1, Math.floor(value)));
 };
 
 const backfillLegacyLockedBudgets = async (tx, vendorId) => {
@@ -311,6 +306,16 @@ const ensureVendorAndWallet = async (userId, tx = prisma) => {
     return { vendor, wallet: refreshedWallet || wallet };
 };
 
+const requireVendorProfile = async (tx, userId) => {
+    const vendor = await tx.vendor.findUnique({ where: { userId } });
+    if (!vendor) {
+        const error = new Error('Vendor profile not found');
+        error.status = 404;
+        throw error;
+    }
+    return vendor;
+};
+
 const toNumber = (value, fallback = 0) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return fallback;
@@ -321,6 +326,40 @@ const toPositiveAmount = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= 0) return null;
     return Number(numeric.toFixed(2));
+};
+
+const normalizeVoucherType = (value, fallback = 'none') => {
+    const candidate = typeof value === 'string' ? value.trim() : '';
+    if (['digital_voucher', 'printed_qr', 'none'].includes(candidate)) {
+        return candidate;
+    }
+    return fallback;
+};
+
+const normalizeAllocationRows = (allocations, { isPostpaid = false } = {}) => {
+    if (!Array.isArray(allocations)) return [];
+
+    return allocations
+        .map((allocation) => {
+            const quantity = Number.parseInt(allocation?.quantity, 10) || 0;
+            const cashbackAmount = toPositiveAmount(allocation?.cashbackAmount) || 0;
+            const providedTotalBudget = Number.parseFloat(allocation?.totalBudget);
+            const totalBudget = isPostpaid
+                ? 0
+                : toNumber(
+                    Number.isFinite(providedTotalBudget)
+                        ? providedTotalBudget
+                        : cashbackAmount * quantity,
+                    0
+                );
+
+            return {
+                quantity,
+                cashbackAmount,
+                totalBudget
+            };
+        })
+        .filter((row) => row.quantity > 0 && (isPostpaid || row.cashbackAmount > 0));
 };
 
 const buildDateRange = (query = {}) => {
@@ -713,7 +752,7 @@ const fundInventoryQrs = async (req, res) => {
 
         const normalizedSeries = normalizeSeriesCode(seriesCode, null);
         const result = await prisma.$transaction(async (tx) => {
-            const { vendor } = await ensureVendorAndWallet(req.user.id, tx);
+            const vendor = await requireVendorProfile(tx, req.user.id);
 
             if (campaign.Brand?.vendorId !== vendor.id) {
                 const error = new Error('Campaign not found or unauthorized');
@@ -2227,6 +2266,11 @@ const cancelCampaignWithRefund = async (tx, { campaignId, vendorId, reason = 'Ca
         }
     });
 
+    // Clean up any BulkExportJob records linked to this campaign (skip if model/table not available)
+    if (tx.bulkExportJob) {
+        await tx.bulkExportJob.deleteMany({ where: { campaignId } }).catch(() => { });
+    }
+
     const updatedCampaign = await tx.campaign.update({
         where: { id: campaignId },
         data: {
@@ -2430,6 +2474,9 @@ exports.deleteCampaign = async (req, res) => {
                 vendorId: vendor.id,
                 reason: 'Campaign deleted by vendor'
             });
+        }, {
+            timeout: 120000,
+            maxWait: 10000
         });
 
         safeLogVendorActivity({
@@ -2554,7 +2601,7 @@ exports.createOrder = async (req, res) => {
             return res.status(400).json({ message: 'Invalid cashback amount' });
         }
 
-        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const vendor = await requireVendorProfile(prisma, req.user.id);
         const printCostPerQr = resolveTechFeePerQr({
             vendor,
             brand: campaign?.Brand
@@ -2619,7 +2666,7 @@ exports.payOrder = async (req, res) => {
         }
 
         const result = await prisma.$transaction(async (tx) => {
-            const { vendor } = await ensureVendorAndWallet(req.user.id, tx);
+            const vendor = await requireVendorProfile(tx, req.user.id);
             if (order.vendorId !== vendor.id) {
                 const error = new Error('Unauthorized');
                 error.status = 403;
@@ -2859,9 +2906,9 @@ exports.payCampaign = async (req, res) => {
         const requestedSeries = normalizeSeriesCode(req.body?.seriesCode, null);
 
         const result = await prisma.$transaction(async (tx) => {
-            const { vendor } = await ensureVendorAndWallet(req.user.id, tx);
+            const vendor = await requireVendorProfile(tx, req.user.id);
 
-            const campaign = await tx.campaign.findUnique({
+            let campaign = await tx.campaign.findUnique({
                 where: { id },
                 include: {
                     Brand: { select: { id: true, qrPricePerUnit: true, vendorId: true } }
@@ -2885,9 +2932,18 @@ exports.payCampaign = async (req, res) => {
                 throw error;
             }
 
-            const allocArray = Array.isArray(campaign.allocations)
-                ? campaign.allocations
-                : [];
+            const hasAllocationOverride = Array.isArray(req.body?.allocations);
+            const allocArray = hasAllocationOverride
+                ? req.body.allocations
+                : Array.isArray(campaign.allocations)
+                    ? campaign.allocations
+                    : [];
+            const hasVoucherTypeOverride = Object.prototype.hasOwnProperty.call(req.body || {}, 'voucherType');
+            const effectiveVoucherType = normalizeVoucherType(
+                hasVoucherTypeOverride ? req.body?.voucherType : campaign.voucherType,
+                normalizeVoucherType(campaign.voucherType, 'none')
+            );
+
             const hasAnyQtyRow = allocArray.some((alloc) => (Number.parseInt(alloc?.quantity, 10) || 0) > 0);
             const hasPositiveCashbackRow = allocArray.some((alloc) => {
                 const quantity = Number.parseInt(alloc?.quantity, 10) || 0;
@@ -2902,25 +2958,53 @@ exports.payCampaign = async (req, res) => {
                 toNumber(campaign.totalBudget, 0) <= 0 &&
                 !toPositiveAmount(campaign.cashbackAmount);
             const isPostpaidCampaign = campaign.planType === 'postpaid' || inferredPostpaidCampaign;
-
-            if (inferredPostpaidCampaign) {
-                await tx.campaign.update({
-                    where: { id: campaign.id },
-                    data: { planType: 'postpaid' }
-                });
-            }
-
-            const normalizedRows = allocArray
-                .map((alloc) => ({
-                    quantity: Number.parseInt(alloc?.quantity, 10) || 0,
-                    cashbackAmount: toPositiveAmount(alloc?.cashbackAmount) || 0
-                }))
-                .filter((row) => row.quantity > 0 && (isPostpaidCampaign || row.cashbackAmount > 0));
+            const normalizedRows = normalizeAllocationRows(allocArray, {
+                isPostpaid: isPostpaidCampaign
+            });
 
             if (!normalizedRows.length) {
                 const error = new Error('Campaign has no valid allocations to fund');
                 error.status = 400;
                 throw error;
+            }
+
+            if (hasAllocationOverride || hasVoucherTypeOverride || inferredPostpaidCampaign) {
+                const normalizedAllocations = normalizedRows.map((row) => ({
+                    cashbackAmount: row.cashbackAmount,
+                    quantity: row.quantity,
+                    totalBudget: row.totalBudget
+                }));
+                const allocationBudgetTotal = isPostpaidCampaign
+                    ? 0
+                    : toNumber(
+                        normalizedAllocations.reduce((sum, row) => sum + Number(row.totalBudget || 0), 0),
+                        0
+                    );
+                const nextPlanType = inferredPostpaidCampaign ? 'postpaid' : campaign.planType;
+                const updateData = {};
+
+                if (hasAllocationOverride) {
+                    updateData.allocations = normalizedAllocations;
+                    updateData.subtotal = allocationBudgetTotal;
+                    updateData.totalBudget = allocationBudgetTotal;
+                }
+                if (hasVoucherTypeOverride) {
+                    updateData.voucherType = effectiveVoucherType;
+                }
+                if (nextPlanType !== campaign.planType) {
+                    updateData.planType = nextPlanType;
+                }
+
+                if (Object.keys(updateData).length) {
+                    await tx.campaign.update({
+                        where: { id: campaign.id },
+                        data: updateData
+                    });
+                    campaign = {
+                        ...campaign,
+                        ...updateData
+                    };
+                }
             }
 
             const totalQty = normalizedRows.reduce((sum, row) => sum + row.quantity, 0);
@@ -2938,7 +3022,7 @@ exports.payCampaign = async (req, res) => {
 
             // Voucher type fee per QR
             const VOUCHER_FEE_MAP = { digital_voucher: 0.20, printed_qr: 0.50, none: 0 };
-            const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[campaign.voucherType] || 0, 0);
+            const voucherFeePerQr = toNumber(VOUCHER_FEE_MAP[effectiveVoucherType] || 0, 0);
             const voucherFeeSubtotal = toNumber(totalQty * voucherFeePerQr, 0);
             const voucherFeeTax = toNumber(voucherFeeSubtotal * INVOICE_GST_RATE, 0);
             const voucherFeeTotal = toNumber(voucherFeeSubtotal + voucherFeeTax, 0);
@@ -2985,7 +3069,7 @@ exports.payCampaign = async (req, res) => {
             // 3. Voucher Fee
             if (voucherFeeTotal > 0) {
                 invoiceItems.push({
-                    label: `Voucher fee (${campaign.voucherType}) for ${totalQty} QRs`,
+                    label: `Voucher fee (${effectiveVoucherType}) for ${totalQty} QRs`,
                     qty: totalQty,
                     unitPrice: voucherFeePerQr,
                     amount: voucherFeeSubtotal,
@@ -3008,7 +3092,7 @@ exports.payCampaign = async (req, res) => {
                     techFeePerQr: printCostPerQr,
                     voucherFeePerQr: voucherFeePerQr,
                     cashbackPerQr: isPostpaidCampaign ? 0 : (cashbackTotal / totalQty),
-                    voucherType: campaign.voucherType
+                    voucherType: effectiveVoucherType
                 }
             });
 
@@ -3043,11 +3127,11 @@ exports.payCampaign = async (req, res) => {
                     campaignBudgetId: campaignBudget.id,
                     invoiceId: sharedInvoice.id,
                     category: 'tech_fee_charge',
-                    description: `Voucher fee (${campaign.voucherType}) for campaign ${campaign.title}`,
+                    description: `Voucher fee (${effectiveVoucherType}) for campaign ${campaign.title}`,
                     metadata: {
                         campaignId: campaign.id,
                         quantity: totalQty,
-                        voucherType: campaign.voucherType
+                        voucherType: effectiveVoucherType
                     }
                 });
             }
@@ -3116,10 +3200,22 @@ exports.payCampaign = async (req, res) => {
                 selectedSeries: result.selectedSeries
             }
         });
+
+        // Send payment success response immediately — don't block on export queue
         res.json({
             message: 'Campaign payment successful. Campaign is now active.',
             fundedCount: result.fundedCount,
             selectedSeries: result.selectedSeries
+        });
+
+        // Fire-and-forget: queue bulk QR PDF export in background (after response is sent)
+        setImmediate(() => {
+            queueCampaignExportJob({
+                vendorId: result.vendorId,
+                campaignId: result.campaignId,
+                splitParts: true,
+                requestedByUserId: req.user.id
+            }).catch((err) => console.error('Auto bulk QR export failed to queue:', err.message));
         });
 
     } catch (error) {
@@ -3130,6 +3226,13 @@ exports.payCampaign = async (req, res) => {
 
 // Download QR PDF for an order
 const { generateQrPdf } = require('../utils/qrPdfGenerator');
+
+const isTruthyFlag = (value) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+const resolveRequestedQrsPerSheet = (value) => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+};
 
 const resolveCampaignProductName = async (campaign) => {
     if (!campaign) return null;
@@ -3246,17 +3349,30 @@ exports.downloadOrderQrPdf = async (req, res) => {
 
 exports.downloadVendorInventoryQrPdf = async (req, res) => {
     try {
-        const fastModeRequested = ['1', 'true', 'yes'].includes(String(req.query?.fast || '').toLowerCase());
+        const fastModeRequested = isTruthyFlag(req.query?.fast);
         const vendor = await prisma.vendor.findUnique({ where: { userId: req.user.id } });
         if (!vendor) {
             return res.status(404).json({ message: 'Vendor profile not found' });
         }
 
         const requestedSeries = normalizeSeriesCode(req.query?.seriesCode, null);
+        if (isTruthyFlag(req.query?.background)) {
+            const job = await queueInventoryExportJob({
+                vendorId: vendor.id,
+                seriesCode: requestedSeries,
+                splitParts: !isTruthyFlag(req.query?.singleFile),
+                requestedByUserId: req.user.id
+            });
+            return res.status(202).json({
+                message: 'Background inventory export started',
+                job
+            });
+        }
+
         const parsedLimit = Number.parseInt(req.query?.limit, 10);
         const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
-            ? Math.min(parsedLimit, 5000)
-            : 2000;
+            ? Math.min(parsedLimit, 50000)
+            : 5000;
 
         const where = {
             vendorId: vendor.id,
@@ -3320,6 +3436,190 @@ exports.downloadVendorInventoryQrPdf = async (req, res) => {
     } catch (error) {
         if (res.headersSent) return;
         res.status(500).json({ message: 'Failed to generate inventory PDF', error: error.message });
+    }
+};
+
+exports.startVendorInventoryBulkQrExport = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const requestedSeries = normalizeSeriesCode(
+            req.body?.seriesCode ?? req.query?.seriesCode,
+            null
+        );
+        const singleFileRequested = isTruthyFlag(req.body?.singleFile ?? req.query?.singleFile);
+        const job = await queueInventoryExportJob({
+            vendorId: vendor.id,
+            seriesCode: requestedSeries,
+            splitParts: !singleFileRequested,
+            requestedByUserId: req.user.id
+        });
+
+        res.status(202).json({
+            message: 'Background inventory export started',
+            job
+        });
+    } catch (error) {
+        res.status(error.status || 500).json({
+            message: error.message || 'Failed to start inventory export'
+        });
+    }
+};
+
+exports.startCampaignBulkQrExport = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const requestedQrsPerSheet = resolveRequestedQrsPerSheet(
+            req.body?.qrsPerSheet ?? req.query?.qrsPerSheet
+        );
+        const singleFileRequested = isTruthyFlag(req.body?.singleFile ?? req.query?.singleFile);
+        const job = await queueCampaignExportJob({
+            vendorId: vendor.id,
+            campaignId: req.params.id,
+            qrsPerSheet: requestedQrsPerSheet,
+            splitParts: !singleFileRequested,
+            requestedByUserId: req.user.id
+        });
+
+        res.status(202).json({
+            message: 'Background campaign export started',
+            job
+        });
+    } catch (error) {
+        res.status(error.status || 500).json({
+            message: error.message || 'Failed to start campaign export'
+        });
+    }
+};
+
+exports.getVendorBulkQrExportJobs = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const jobs = await listVendorBulkExportJobs(vendor.id, req.query?.limit);
+
+        res.json({
+            jobs
+        });
+    } catch (error) {
+        res.status(error.status || 500).json({
+            message: error.message || 'Failed to fetch export jobs'
+        });
+    }
+};
+
+exports.getVendorBulkQrExportJob = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const job = await getVendorBulkExportJob(vendor.id, req.params.jobId);
+
+        res.json({
+            job
+        });
+    } catch (error) {
+        res.status(error.status || 500).json({
+            message: error.message || 'Failed to fetch export job'
+        });
+    }
+};
+
+exports.cancelVendorBulkExportJob = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const { jobId } = req.params;
+
+        if (!prisma.bulkExportJob) {
+            return res.status(500).json({ message: 'Export job tracking is currently initializing. Please try again later.' });
+        }
+
+        // Verify ownership and status
+        const job = await prisma.bulkExportJob.findFirst({
+            where: {
+                id: jobId,
+                vendorId: vendor.id,
+                status: {
+                    in: ['queued', 'processing']
+                }
+            }
+        });
+
+        if (!job) {
+            return res.status(404).json({ message: 'Export job not found or cannot be cancelled.' });
+        }
+
+        // Cancel the job (mark as failed)
+        await prisma.bulkExportJob.update({
+            where: { id: jobId },
+            data: {
+                status: 'failed',
+                errorMsg: 'Cancelled by user.'
+            }
+        });
+
+        res.json({ message: 'Export job cancelled successfully.' });
+    } catch (error) {
+        if (error.code === 'P2021') {
+            return res.json({ message: 'Export job cancelled.' }); // act like success if it does not exist
+        }
+        res.status(500).json({ message: 'Failed to cancel export job.', error: error.message });
+    }
+};
+
+exports.deleteVendorBulkExportJob = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const { jobId } = req.params;
+
+        if (!prisma.bulkExportJob) {
+            return res.status(500).json({ message: 'Export job tracking is currently initializing. Please try again later.' });
+        }
+
+        const job = await prisma.bulkExportJob.findFirst({
+            where: {
+                id: jobId,
+                vendorId: vendor.id
+            }
+        });
+
+        if (!job) {
+            return res.status(404).json({ message: 'Export job not found.' });
+        }
+
+        await prisma.bulkExportJob.delete({
+            where: { id: jobId }
+        });
+
+        res.json({ message: 'Export job deleted successfully.' });
+    } catch (error) {
+        if (error.code === 'P2021') {
+            return res.json({ message: 'Export job deleted.' });
+        }
+        res.status(500).json({ message: 'Failed to delete export job.', error: error.message });
+    }
+};
+
+exports.downloadVendorBulkQrExportJob = async (req, res) => {
+    try {
+        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const artifact = await getVendorBulkExportArtifact(vendor.id, req.params.jobId);
+
+        safeLogVendorActivity({
+            vendorId: vendor.id,
+            action: 'bulk_qr_export_download',
+            entityType: 'export_job',
+            entityId: req.params.jobId,
+            metadata: {
+                fileName: artifact.fileName,
+                fileMimeType: artifact.fileMimeType
+            },
+            req
+        });
+
+        res.setHeader('Content-Type', artifact.fileMimeType);
+        return res.download(artifact.absolutePath, artifact.fileName);
+    } catch (error) {
+        if (res.headersSent) return;
+        res.status(error.status || 500).json({
+            message: error.message || 'Failed to download export file'
+        });
     }
 };
 
@@ -3514,7 +3814,7 @@ exports.paySheetCashback = async (req, res) => {
             return res.status(400).json({ message: 'Invalid cashback amount' });
         }
 
-        const { vendor } = await ensureVendorAndWallet(req.user.id);
+        const vendor = await requireVendorProfile(prisma, req.user.id);
         const campaign = await prisma.campaign.findUnique({
             where: { id: campaignId },
             include: { Brand: true }
@@ -3589,8 +3889,9 @@ exports.downloadCampaignQrPdf = async (req, res) => {
             marks[key] = Date.now();
         };
         const { id: campaignId } = req.params;
-        const explicitFastModeRequested = ['1', 'true', 'yes'].includes(String(req.query?.fast || '').toLowerCase());
-        const skipLogoRequested = ['1', 'true', 'yes'].includes(String(req.query?.skipLogo || '').toLowerCase());
+        const explicitFastModeRequested = isTruthyFlag(req.query?.fast);
+        const skipLogoRequested = isTruthyFlag(req.query?.skipLogo);
+        const requestedQrsPerSheet = resolveRequestedQrsPerSheet(req.query?.qrsPerSheet);
         const parsedSheetIndex = Number.parseInt(req.query?.sheetIndex, 10);
         const parsedOffset = Number.parseInt(req.query?.offset, 10);
         const parsedLimit = Number.parseInt(req.query?.limit, 10);
@@ -3625,6 +3926,20 @@ exports.downloadCampaignQrPdf = async (req, res) => {
 
         if (campaign.Brand.vendorId !== vendor.id) {
             return res.status(403).json({ message: 'Unauthorized access to this campaign' });
+        }
+
+        if (isTruthyFlag(req.query?.background)) {
+            const job = await queueCampaignExportJob({
+                vendorId: vendor.id,
+                campaignId,
+                qrsPerSheet: requestedQrsPerSheet,
+                splitParts: !isTruthyFlag(req.query?.singleFile),
+                requestedByUserId: req.user.id
+            });
+            return res.status(202).json({
+                message: 'Background campaign export started',
+                job
+            });
         }
 
         if (campaign.status !== 'active') {
@@ -3676,7 +3991,7 @@ exports.downloadCampaignQrPdf = async (req, res) => {
         }
         const qrsPerSheet =
             campaign.planType === 'postpaid'
-                ? resolvePostpaidSheetSize(totalCampaignQrCount)
+                ? resolvePostpaidSheetSize(totalCampaignQrCount, requestedQrsPerSheet)
                 : 25;
 
         if (
@@ -4118,16 +4433,16 @@ const mapRedemptionEvent = (event) => {
 exports.exportVendorRedemptions = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
-        
+
         const qrWhere = {
             status: 'redeemed',
             Campaign: { Brand: { vendorId: vendor.id } }
         };
-        
+
         if (req.query.campaignId) {
             qrWhere.campaignId = req.query.campaignId;
         }
-        
+
         const qrs = await prisma.qRCode.findMany({
             where: qrWhere,
             include: {
@@ -4139,7 +4454,7 @@ exports.exportVendorRedemptions = async (req, res) => {
 
         const userIds = Array.from(new Set(qrs.map(qr => qr.redeemedByUserId).filter(Boolean)));
         let userMap = new Map();
-        
+
         if (userIds.length > 0) {
             const users = await prisma.user.findMany({
                 where: { id: { in: userIds } },

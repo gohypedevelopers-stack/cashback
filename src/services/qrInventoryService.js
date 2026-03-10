@@ -26,7 +26,12 @@ const buildInventoryRows = (
         startOrder = 1,
         sourceBatch = 'AUTO_SEED',
         importedAt = new Date(),
-        prebuiltHashes = null
+        prebuiltHashes = null,
+        status = 'inventory',
+        cashbackAmount = 0,
+        campaignId = null,
+        campaignBudgetId = null,
+        orderId = null
     } = {}
 ) => {
     const rows = [];
@@ -39,11 +44,11 @@ const buildInventoryRows = (
             seriesOrder: Number.isFinite(startOrder + i) ? startOrder + i : null,
             sourceBatch: sourceBatch || null,
             importedAt,
-            status: 'inventory',
-            cashbackAmount: 0,
-            campaignId: null,
-            campaignBudgetId: null,
-            orderId: null
+            status,
+            cashbackAmount,
+            campaignId,
+            campaignBudgetId,
+            orderId
         });
     }
     return rows;
@@ -311,7 +316,16 @@ const importInventorySeries = async (
 
 const allocateInventoryQrs = async (
     tx,
-    { vendorId, campaignId, campaignBudgetId, quantity, cashbackAmount, orderId = null, seriesCode = null }
+    {
+        vendorId,
+        campaignId,
+        campaignBudgetId,
+        quantity,
+        cashbackAmount,
+        orderId = null,
+        seriesCode = null,
+        onProgress = null
+    }
 ) => {
     const safeQuantity = Number.parseInt(quantity, 10);
     if (!Number.isFinite(safeQuantity) || safeQuantity <= 0) {
@@ -332,25 +346,6 @@ const allocateInventoryQrs = async (
     const orderBy = normalizedSeries
         ? [{ seriesOrder: 'asc' }, { createdAt: 'asc' }]
         : [{ createdAt: 'asc' }];
-    const existingInventoryCount = await tx.qRCode.count({ where });
-    if (existingInventoryCount < safeQuantity) {
-        const missingCount = safeQuantity - existingInventoryCount;
-        const seriesOrderCursor = await tx.qRCode.aggregate({
-            where: {
-                vendorId,
-                seriesCode: normalizedSeries || DEFAULT_AUTO_SERIES
-            },
-            _max: { seriesOrder: true }
-        });
-        const startOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
-        await createGeneratedInventoryInChunks(tx, {
-            vendorId,
-            count: missingCount,
-            seriesCode: normalizedSeries || DEFAULT_AUTO_SERIES,
-            startOrder,
-            sourceBatch: 'AUTO_ON_DEMAND'
-        });
-    }
     const dbChunkSize = Math.max(100, DEFAULT_DB_CHUNK_SIZE);
     const sampleLimit = Math.max(0, DEFAULT_RESPONSE_SAMPLE_LIMIT);
     let remaining = safeQuantity;
@@ -387,6 +382,14 @@ const allocateInventoryQrs = async (
         fundedCount += chunk.length;
         remaining -= chunk.length;
 
+        if (typeof onProgress === 'function') {
+            await onProgress({
+                chunkCount: chunk.length,
+                fundedCount,
+                totalRequested: safeQuantity
+            });
+        }
+
         if (sampleQrs.length < sampleLimit) {
             const freeSlots = sampleLimit - sampleQrs.length;
             const sampleChunk = chunk.slice(0, freeSlots).map((qr) => ({
@@ -397,6 +400,60 @@ const allocateInventoryQrs = async (
                 cashbackAmount
             }));
             sampleQrs.push(...sampleChunk);
+        }
+    }
+
+    if (remaining > 0) {
+        const fundingSeriesCode = normalizedSeries || DEFAULT_AUTO_SERIES;
+        const seriesOrderCursor = await tx.qRCode.aggregate({
+            where: {
+                vendorId,
+                seriesCode: fundingSeriesCode
+            },
+            _max: { seriesOrder: true }
+        });
+        let nextSeriesOrder = Number(seriesOrderCursor?._max?.seriesOrder || 0) + 1;
+        const importedAt = new Date();
+
+        while (remaining > 0) {
+            const createCount = Math.min(remaining, dbChunkSize);
+            const rows = buildInventoryRows(vendorId, createCount, {
+                seriesCode: fundingSeriesCode,
+                startOrder: nextSeriesOrder,
+                sourceBatch: 'AUTO_ON_DEMAND_FUNDED',
+                importedAt,
+                status: 'funded',
+                cashbackAmount,
+                campaignId,
+                campaignBudgetId,
+                orderId
+            });
+            const created = await createInChunks(tx, rows, dbChunkSize);
+            if (!created) break;
+
+            fundedCount += created;
+            remaining -= created;
+            nextSeriesOrder += createCount;
+
+            if (typeof onProgress === 'function') {
+                await onProgress({
+                    chunkCount: created,
+                    fundedCount,
+                    totalRequested: safeQuantity
+                });
+            }
+
+            if (sampleQrs.length < sampleLimit) {
+                const freeSlots = sampleLimit - sampleQrs.length;
+                const sampleChunk = rows.slice(0, Math.min(freeSlots, created)).map((qr) => ({
+                    id: null,
+                    uniqueHash: qr.uniqueHash,
+                    seriesCode: qr.seriesCode || null,
+                    seriesOrder: Number.isFinite(qr.seriesOrder) ? qr.seriesOrder : null,
+                    cashbackAmount
+                }));
+                sampleQrs.push(...sampleChunk);
+            }
         }
     }
 

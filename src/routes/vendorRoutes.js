@@ -40,6 +40,13 @@ const {
     payCampaign,
     downloadOrderQrPdf,
     downloadVendorInventoryQrPdf,
+    startVendorInventoryBulkQrExport,
+    startCampaignBulkQrExport,
+    getVendorBulkQrExportJobs,
+    getVendorBulkQrExportJob,
+    cancelVendorBulkExportJob,
+    deleteVendorBulkExportJob,
+    downloadVendorBulkQrExportJob,
     downloadCampaignQrPdf,
     getVendorRedemptions,
     exportVendorRedemptions,
@@ -97,8 +104,16 @@ restrictedRouter.post('/qrs/recharge', rechargeQrInventory);
 restrictedRouter.get('/qrs/inventory/series', getVendorQrInventorySeries);
 restrictedRouter.post('/qrs/inventory/import', importVendorQrInventorySeries);
 restrictedRouter.get('/qrs/inventory/download', downloadVendorInventoryQrPdf);
+restrictedRouter.post('/qrs/inventory/export', startVendorInventoryBulkQrExport);
 restrictedRouter.get('/qrs', getMyQRs);
 restrictedRouter.delete('/qrs/batch', deleteQrBatch);
+restrictedRouter.get('/qr-export/jobs', getVendorBulkQrExportJobs);
+restrictedRouter.get('/qr-export/jobs/:jobId', getVendorBulkQrExportJob);
+restrictedRouter.post('/qr-export/jobs/:jobId/cancel', cancelVendorBulkExportJob);
+restrictedRouter.delete('/qr-export/jobs/:jobId/delete', deleteVendorBulkExportJob);
+restrictedRouter.post('/qr-export/jobs/:jobId/delete', deleteVendorBulkExportJob);
+restrictedRouter.delete('/qr-export/jobs/:jobId', cancelVendorBulkExportJob);
+restrictedRouter.get('/qr-export/jobs/:jobId/download', downloadVendorBulkQrExportJob);
 
 // QR Orders (with tracking)
 restrictedRouter.get('/orders', getVendorOrders);
@@ -122,6 +137,7 @@ restrictedRouter.put('/campaigns/:id/status', updateCampaignStatus);
 restrictedRouter.delete('/campaigns/:id', deleteCampaign);
 restrictedRouter.get('/campaigns/stats', getCampaignStats);
 restrictedRouter.get('/campaigns/:id/download', downloadCampaignQrPdf);
+restrictedRouter.post('/campaigns/:id/export', startCampaignBulkQrExport);
 restrictedRouter.put('/campaigns/:id/sheet-cashback', assignSheetCashback);
 restrictedRouter.post('/campaigns/:id/sheet-pay', paySheetCashback);
 

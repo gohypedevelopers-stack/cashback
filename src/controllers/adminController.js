@@ -395,6 +395,7 @@ exports.deleteCampaign = async (req, res) => {
         const brand = await prisma.brand.findUnique({ where: { id: campaign.brandId } });
 
         await prisma.$transaction(async (tx) => {
+            await tx.bulkExportJob.deleteMany({ where: { campaignId: id } }).catch(() => { });
             await tx.qRCode.deleteMany({ where: { campaignId: id } });
             await tx.campaign.delete({ where: { id } });
         });
@@ -2429,7 +2430,7 @@ exports.updateBrandDetails = async (req, res) => {
             if (['prepaid', 'postpaid'].includes(plan)) {
                 data.defaultPlanType = plan;
             } else {
-                 return res.status(400).json({ message: 'Invalid plan type. Must be prepaid or postpaid' });
+                return res.status(400).json({ message: 'Invalid plan type. Must be prepaid or postpaid' });
             }
         }
         if (qrPricePerUnit !== undefined && qrPricePerUnit !== '') {
@@ -2479,8 +2480,8 @@ exports.updateBrandDetails = async (req, res) => {
             });
         }
 
-    // 
-    if (data.defaultPlanType) {
+        // 
+        if (data.defaultPlanType) {
             safeLogActivity({
                 actorUserId: req.user?.id,
                 actorRole: req.user?.role,
