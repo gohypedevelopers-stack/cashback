@@ -1,44 +1,68 @@
-# Coupon Cashback Backend
+# Assured Rewards Backend
 
-## Setup
+Express + Prisma backend for the Assured Rewards platform.
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+## Path
 
-2. Configure environment:
-   - Create `.env` file (see `.env.example`).
-   - ensure PostgreSQL is running.
+`e:\webapp\cashback backend\cashback`
 
-3. Run Server:
-   ```bash
-   npm start
-   ```
+## Requirements
 
-## API Endpoints
+- Node.js + npm
+- PostgreSQL
+- Environment file (`.env`)
 
-Detailed Postman testing guide:
+## Environment Setup
 
+Copy `.env.example` to `.env` and fill required values:
+
+- `PORT`
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `FRONTEND_URL`
+- `PUBLIC_APP_URL`
+- `QR_BASE_URL`
+
+## Local Run
+
+```bash
+npm install
+npx prisma migrate deploy
+npx prisma generate
+npm run dev
+```
+
+For non-watch mode:
+
+```bash
+npm start
+```
+
+## PM2 (Production)
+
+`ecosystem.config.js` defines:
+
+- app name: `cashback-api`
+- script: `./src/index.js`
+- mode: `cluster`
+
+First-time PM2 start:
+
+```bash
+pm2 start ecosystem.config.js --env production
+pm2 save
+pm2 startup
+```
+
+## Deployment Guide
+
+Full frontend + backend VPS deployment steps are in:
+
+- [`../../DEPLOYMENT_VPS.md`](../../DEPLOYMENT_VPS.md)
+
+## API Testing Docs
+
+- `API_GUIDE.md`
 - `POSTMAN_API_TESTING.md`
-
-### Auth
-- `POST /api/auth/register` - Register (admin/vendor/customer)
-- `POST /api/auth/login` - Login
-
-### Admin (Protected: Admin Only)
-- `GET /api/admin/brands` - List Brands
-- `POST /api/admin/brands` - Create Brand
-- `POST /api/admin/campaigns` - Create Campaign
-- `GET /api/admin/vendors` - List Vendors
-- `POST /api/admin/vendors` - Create Vendor Profile
-
-### Vendor (Protected: Vendor Only)
-- `GET /api/vendor/wallet` - View Balance
-- `POST /api/vendor/wallet/recharge` - Recharge Wallet
-- `POST /api/vendor/qrs/order` - Order QRs (Deduct balance)
-- `GET /api/vendor/qrs` - View My QRs
-
-### Public (Customer)
-- `GET /api/public/qrs/:hash` - Verify QR
-- `POST /api/public/qrs/:hash/redeem` - Redeem QR (Submit UPI)
