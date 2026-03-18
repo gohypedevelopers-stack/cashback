@@ -127,6 +127,7 @@ restrictedRouter.get('/redemptions', getVendorRedemptions);
 restrictedRouter.get('/redemptions/export', exportVendorRedemptions);
 restrictedRouter.get('/redemptions/map', getVendorRedemptionsMap);
 restrictedRouter.get('/analytics/summary', getVendorSummaryAnalytics);
+restrictedRouter.get('/reports/summary', getVendorSummaryAnalytics);
 restrictedRouter.get('/customers', getVendorCustomers);
 restrictedRouter.get('/customers/export', exportVendorCustomers);
 

@@ -364,14 +364,16 @@ const normalizeAllocationRows = (allocations, { isPostpaid = false } = {}) => {
 
 const buildDateRange = (query = {}) => {
     const createdAt = {};
-    if (query.dateFrom) {
-        const start = new Date(query.dateFrom);
+    const fromValue = query.dateFrom || query.from;
+    const toValue = query.dateTo || query.to;
+    if (fromValue) {
+        const start = new Date(fromValue);
         if (!Number.isNaN(start.getTime())) {
             createdAt.gte = start;
         }
     }
-    if (query.dateTo) {
-        const end = new Date(query.dateTo);
+    if (toValue) {
+        const end = new Date(toValue);
         if (!Number.isNaN(end.getTime())) {
             end.setHours(23, 59, 59, 999);
             createdAt.lte = end;
@@ -4669,6 +4671,7 @@ exports.getVendorSummaryAnalytics = async (req, res) => {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const where = buildRedemptionEventWhere(vendor, req.query);
         where.type = 'redeem_success';
+        const dateRange = buildDateRange(req.query);
 
         const events = await prisma.redemptionEvent.findMany({
             where,
@@ -4725,9 +4728,10 @@ exports.getVendorSummaryAnalytics = async (req, res) => {
         redeemedQRs.forEach(qr => {
             const dateVal = qr.redeemedAt || qr.updatedAt || qr.createdAt;
             if (!dateVal) return;
-            // Format to local date string or generic YYYY-MM-DD
             const d = new Date(dateVal);
             if (isNaN(d.getTime())) return;
+            if (dateRange?.gte && d < dateRange.gte) return;
+            if (dateRange?.lte && d > dateRange.lte) return;
             const dateStr = d.toISOString().slice(0, 10);
             trendMap.set(dateStr, (trendMap.get(dateStr) || 0) + 1);
         });
