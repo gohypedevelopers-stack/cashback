@@ -4671,7 +4671,6 @@ exports.getVendorSummaryAnalytics = async (req, res) => {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const where = buildRedemptionEventWhere(vendor, req.query);
         where.type = 'redeem_success';
-        const dateRange = buildDateRange(req.query);
 
         const events = await prisma.redemptionEvent.findMany({
             where,
@@ -4710,28 +4709,10 @@ exports.getVendorSummaryAnalytics = async (req, res) => {
             }
         });
 
-        // Use QRCode to build the trend to ensure consistency with overall redeemed count
-        const qrWhere = {
-            status: 'redeemed',
-            Campaign: { Brand: { vendorId: vendor.id } }
-        };
-        if (req.query.campaignId) {
-            qrWhere.campaignId = req.query.campaignId;
-        }
-
-        const redeemedQRs = await prisma.qRCode.findMany({
-            where: qrWhere,
-            select: { redeemedAt: true, updatedAt: true, createdAt: true }
-        });
-
         const trendMap = new Map();
-        redeemedQRs.forEach(qr => {
-            const dateVal = qr.redeemedAt || qr.updatedAt || qr.createdAt;
-            if (!dateVal) return;
-            const d = new Date(dateVal);
+        events.forEach((event) => {
+            const d = new Date(event.createdAt);
             if (isNaN(d.getTime())) return;
-            if (dateRange?.gte && d < dateRange.gte) return;
-            if (dateRange?.lte && d > dateRange.lte) return;
             const dateStr = d.toISOString().slice(0, 10);
             trendMap.set(dateStr, (trendMap.get(dateStr) || 0) + 1);
         });
