@@ -22,7 +22,8 @@ const corsOptions = {
     credentials: true,
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Disposition']
 };
 
 // Middleware
@@ -81,3 +82,4 @@ const startServer = async () => {
 
 startServer();
 
+ 

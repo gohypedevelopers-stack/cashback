@@ -813,6 +813,10 @@ const processCampaignJob = async (job) => {
                 ? Math.max(1, Math.ceil(totalQrs / resolvedQrsPerSheet))
                 : undefined,
             qrsPerSheet: resolvedQrsPerSheet,
+            voucherDesignUrl: campaign.voucherDesignUrl || null,
+            voucherHeading: campaign.voucherHeading || null,
+            voucherSubtext: campaign.voucherSubtext || null,
+            voucherExtraText: campaign.voucherExtraText || null,
             onProgress: progressUpdater
         });
 

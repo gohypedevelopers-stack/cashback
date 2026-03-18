@@ -1,4 +1,4 @@
-﻿const crypto = require('crypto');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const PDFDocument = require('pdfkit');
@@ -348,61 +348,24 @@ const renderInvoiceToBuffer = (invoice) => {
             .text('Total', summaryX + 10, totalY + 5, { width: 100 });
         doc.text(formatCurrency(total), summaryX + 80, totalY + 5, { width: 100, align: 'right' });
 
-        // Balance Due / Amount Paid (depends on invoice type)
-        const isReceipt = String(invoice.type || '').toUpperCase().includes('RECEIPT') ||
-                          String(invoice.type || '').toUpperCase().includes('DEPOSIT');
+        // Balance Due
         const balY = totalY + rowH + 2;
-
-        if (isReceipt) {
-            // DEPOSIT_RECEIPT — payment already received
-            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#E2E8F0');
-            doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
-                .text('Amount Paid', summaryX + 10, balY + 6, { width: 100 });
-            doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
-                .text(formatCurrency(total), summaryX + 80, balY + 6, { width: 100, align: 'right' });
-
-            const bal2Y = balY + rowH + 2;
-            doc.rect(summaryX, bal2Y, summaryW, rowH + 4).fill(LIGHT_BG);
-            doc.fillColor(GRAY).fontSize(10).font('Helvetica-Bold')
-                .text('Balance Due', summaryX + 10, bal2Y + 7, { width: 100 });
-            doc.fillColor(DARK).fontSize(10).font('Helvetica-Bold')
-                .text(formatCurrency(0), summaryX + 80, bal2Y + 7, { width: 100, align: 'right' });
-        } else {
-            // FEE_TAX_INVOICE — amount already paid from wallet
-            doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#E2E8F0');
-            doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
-                .text('Amount Paid', summaryX + 10, balY + 6, { width: 100 });
-            doc.fillColor(GREEN).fontSize(9).font('Helvetica-Bold')
-                .text(formatCurrency(total), summaryX + 80, balY + 6, { width: 100, align: 'right' });
-
-            const bal2Y = balY + rowH + 2;
-            doc.rect(summaryX, bal2Y, summaryW, rowH + 4).fill(LIGHT_BG);
-            doc.fillColor(GRAY).fontSize(10).font('Helvetica-Bold')
-                .text('Balance Due', summaryX + 10, bal2Y + 7, { width: 100 });
-            doc.fillColor(DARK).fontSize(10).font('Helvetica-Bold')
-                .text(formatCurrency(0), summaryX + 80, bal2Y + 7, { width: 100, align: 'right' });
-        }
+        doc.rect(summaryX, balY, summaryW, rowH + 2).fill('#FEE2E2');
+        doc.fillColor('#B91C1C').fontSize(9).font('Helvetica-Bold')
+            .text('Balance Due', summaryX + 10, balY + 6, { width: 100 });
+        doc.fillColor('#B91C1C').fontSize(9).font('Helvetica-Bold')
+            .text(formatCurrency(total), summaryX + 80, balY + 6, { width: 100, align: 'right' });
 
         // ──────────────── TERMS & CONDITIONS ────────────────
-        const lastSummaryY = balY + (rowH * 2) + 12;
-        const termsY = Math.max(y + 90, lastSummaryY);
-        
-        if (termsY + 40 > doc.page.height - M) {
-            doc.addPage();
-            y = M;
-        } else {
-            y = termsY;
-        }
-
-        doc.moveTo(M, y).lineTo(M + CONTENT_W, y).strokeColor('#D1D5DB').lineWidth(0.5).stroke();
-
-        doc.fillColor(DARK).fontSize(10).font('Helvetica-Bold')
-            .text('Terms & Conditions', M, y + 8);
-        doc.fillColor(GRAY).fontSize(7).font('Helvetica')
-            .text(
-                'Full payment is due upon receipt of this invoice. Late payments may incur additional charges as outlined as per the applicable laws.',
-                M, y + 22, { width: CONTENT_W }
-            );
+        doc.fillColor('#1F2937').fontSize(9).font('Helvetica-Bold')
+            .text('Terms & Conditions', M, balY + rowH + 15);
+        doc.fillColor('#4B5563').fontSize(8).font('Helvetica')
+            .text([
+                '1. All payments are non-refundable.',
+                '2. Please mention the invoice number in your bank transfer reference.',
+                '3. Goods once sold will not be taken back.',
+                '4. This is a computer-generated invoice and does not require a signature.'
+            ].join('\n'), M, balY + rowH + 28, { width: CONTENT_W });
 
         // ──────────────── FOOTER ────────────────
         doc.fillColor('#9CA3AF').fontSize(7).font('Helvetica')

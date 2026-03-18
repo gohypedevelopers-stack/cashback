@@ -190,6 +190,24 @@ const getBrandLogoBuffer = async (brandLogoUrl) => {
     return null;
 };
 
+const getVoucherDesignBuffer = (designUrl) => {
+    if (!designUrl) return null;
+    const uploadsRoot = path.resolve(__dirname, '../../uploads');
+    // designUrl is expected to be like 'card_design_1.png'
+    const absolutePath = path.resolve(uploadsRoot, designUrl);
+
+    if (!absolutePath.toLowerCase().startsWith(uploadsRoot.toLowerCase())) {
+        return null;
+    }
+
+    if (!fs.existsSync(absolutePath)) {
+        console.warn('Voucher design file not found:', absolutePath);
+        return null;
+    }
+
+    return fs.readFileSync(absolutePath);
+};
+
 const buildQrTarget = (uniqueHash) => `${getQrBaseUrl()}/redeem/${uniqueHash}`;
 const isRedeemedQrStatus = (status) => String(status || '').toLowerCase() === 'redeemed';
 
@@ -210,7 +228,7 @@ const renderQrBuffer = async (uniqueHash, width) => {
     return QRCode.toBuffer(buildQrTarget(uniqueHash), {
         type: 'png',
         width,
-        margin: QR_MARGIN,
+        margin: 0,
         errorCorrectionLevel: QR_ERROR_CORRECTION_LEVEL
     });
 };
@@ -404,7 +422,8 @@ const drawPostpaidPageGrid = ({
     pageBuffers,
     yPos,
     globalSheetIdx,
-    pageStart
+    pageStart,
+    voucherDesignBuffer
 }) => {
     const qrSize = 85;
     const labelHeight = 30;
@@ -430,6 +449,25 @@ const drawPostpaidPageGrid = ({
             width: qrSize,
             height: qrSize
         });
+
+        if (voucherDesignBuffer) {
+            // If we have a design, we draw it as a card background
+            // We'll adjust the QR size and position for the card
+            const cardWidth = cellWidth - 10;
+            const cardHeight = cellHeight - 5;
+            const cardX = currentX + 5;
+            const cardY = currentY;
+
+            // Draw card background first
+            doc.image(voucherDesignBuffer, cardX, cardY, { width: cardWidth, height: cardHeight });
+
+            // Redraw QR on top, centered in the card
+            const scaledQrSize = 45;
+            doc.image(pageBuffers[i], cardX + (cardWidth - scaledQrSize) / 2, cardY + 10, {
+                width: scaledQrSize,
+                height: scaledQrSize
+            });
+        }
 
         if (isRedeemed) {
             const badgeWidth = 46;
@@ -458,15 +496,14 @@ const drawPostpaidPageGrid = ({
             align: 'center'
         });
 
-        const qrCashback = Number(qr?.cashbackAmount) || 0;
-        if (qrCashback > 0 || isRedeemed) {
-            const valueLabel = qrCashback > 0 ? `Rs. ${qrCashback.toFixed(0)}` : 'Rs. 0';
+        const isRedeemedText = isRedeemed;
+        if (isRedeemedText) {
             doc
-                .fontSize(isRedeemed ? 7 : 8)
-                .font(isRedeemed ? 'Helvetica-Bold' : 'Helvetica')
-                .fillColor(isRedeemed ? '#b45309' : 'black');
+                .fontSize(7)
+                .font('Helvetica-Bold')
+                .fillColor('#b45309');
             doc.text(
-                isRedeemed ? `${valueLabel} (Redeemed)` : valueLabel,
+                `(Redeemed)`,
                 currentX,
                 labelY + 10,
                 {
@@ -483,7 +520,8 @@ const drawPrepaidPageGrid = ({
     doc,
     pageQrs,
     pageBuffers,
-    startY
+    startY,
+    voucherDesignBuffer
 }) => {
     const qrSize = 80;
     const labelHeight = 35;
@@ -499,23 +537,64 @@ const drawPrepaidPageGrid = ({
     for (let i = 0; i < pageQrs.length; i += 1) {
         const qr = pageQrs[i];
 
-        doc.image(pageBuffers[i], currentX + (cellWidth - qrSize) / 2, currentY, {
-            width: qrSize,
-            height: qrSize
-        });
+        if (voucherDesignBuffer) {
+            const cardWidth = cellWidth - 10;
+            const cardHeight = cellHeight - 10;
+            const cardX = currentX + 5;
+            const cardY = currentY;
+
+            doc.image(voucherDesignBuffer, cardX, cardY, { width: cardWidth, height: cardHeight });
+
+            const scaledQrSize = 40;
+            doc.image(pageBuffers[i], cardX + (cardWidth - scaledQrSize) / 2, cardY + 12, {
+                width: scaledQrSize,
+                height: scaledQrSize
+            });
+        } else {
+            doc.image(pageBuffers[i], currentX + (cellWidth - qrSize) / 2, currentY, {
+                width: qrSize,
+                height: qrSize
+            });
+        }
 
         const labelY = currentY + qrSize + 2;
-        doc.fontSize(7).font('Helvetica');
-        doc.text(`#${String(qr.uniqueHash || '').slice(-6)}`, currentX, labelY, {
-            width: cellWidth,
-            align: 'center'
-        });
+        
+        if (qr.status === 'redeemed') {
+            // Red watermark over the generic QR code or card 
+            const imgX = voucherDesignBuffer ? currentX + 5 + ((cellWidth - 10) - 40) / 2 : currentX + (cellWidth - qrSize) / 2;
+            const imgY = voucherDesignBuffer ? currentY + 12 : currentY;
+            const imgS = voucherDesignBuffer ? 40 : qrSize;
 
-        doc.fontSize(9).font('Helvetica-Bold');
-        doc.text(`Rs. ${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
-            width: cellWidth,
-            align: 'center'
-        });
+            doc.save();
+            doc.fillColor('white').fillOpacity(0.85);
+            doc.rect(imgX, imgY, imgS, imgS).fill();
+            doc.fillColor('red').fillOpacity(1);
+            doc.fontSize(imgS > 50 ? 12 : 8).font('Helvetica-Bold');
+            doc.translate(imgX + imgS/2, imgY + imgS/2);
+            doc.rotate(-45);
+            doc.text("CLAIMED", -30, -5, { width: 60, align: 'center' });
+            doc.restore();
+
+            doc.fontSize(7).font('Helvetica-Bold').fillColor('red');
+            doc.text(`#${String(qr.uniqueHash || '').slice(-6)} - CLAIMED`, currentX, labelY, {
+                width: cellWidth,
+                align: 'center'
+            });
+        } else {
+            doc.fontSize(7).font('Helvetica').fillColor('black');
+            doc.text(`#${String(qr.uniqueHash || '').slice(-6)}`, currentX, labelY, {
+                width: cellWidth,
+                align: 'center'
+            });
+        }
+
+        // Removing the amount label from the bottom of the QR code
+        // doc.fontSize(9).font('Helvetica-Bold').fillColor(qr.status === 'redeemed' ? 'red' : 'black');
+        // doc.text(`Rs. ${Number(qr.cashbackAmount).toFixed(0)}`, currentX, labelY + 10, {
+        //    width: cellWidth,
+        //    align: 'center'
+        // });
+        // doc.fillColor('black');
 
         col += 1;
         if (col >= cols) {
@@ -526,6 +605,163 @@ const drawPrepaidPageGrid = ({
             currentX += cellWidth + 5;
         }
     }
+};
+
+/**
+ * Get the buffer for the voucher template image.
+ * Uses the converted assured_gift_card_placeholder.png.
+ */
+const getVoucherTemplateBuffer = (designUrl) => {
+    if (!designUrl) return null;
+    const uploadsRoot = path.resolve(__dirname, '../../uploads');
+    const templatePath = path.resolve(uploadsRoot, 'assured_gift_card_placeholder.png');
+    
+    if (!fs.existsSync(templatePath)) {
+        console.warn('Voucher template PNG not found:', templatePath);
+        return null;
+    }
+    
+    return fs.readFileSync(templatePath);
+};
+
+/**
+ * Draw full-size print-ready voucher cards.
+ * Each card will be on its own exact-size PDF page (88x55mm).
+ * 88mm = 249.45 pts, 55mm = 155.91 pts.
+ */
+const drawVoucherCards = async ({
+    doc,
+    qrCodes,
+    voucherDesignBuffer,
+    brandName,
+    brandLogoBuffer,
+    voucherHeading,
+    voucherSubtext,
+    voucherExtraText,
+    onProgress
+}) => {
+    // Exact business card size: 88 x 55 mm
+    const cardWidthPts = 249.45;
+    const cardHeightPts = 155.91;
+
+    // QR code render size (high quality for print)
+    const qrRenderSize = 300;
+
+    // QR placement — precisely inside the black border box on the template.
+    // Derived from image analysis: box starts at ~60.4% from left, ~28% from top,
+    // box is ~28% of image width. Add small inner padding to avoid touching borders.
+    const qrLeftPct = 0.625;
+    const qrTopPct = 0.305;
+    const qrSizePct = 0.390;
+
+    let processedQrs = 0;
+
+    for (let i = 0; i < qrCodes.length; i += 1) {
+        const qr = qrCodes[i];
+        const pageBuffers = await renderQrPageBuffers([qr], qrRenderSize);
+
+        // Add a new exact-size page for this card with zero margin
+        doc.addPage({
+            size: [cardWidthPts, cardHeightPts],
+            margin: 0
+        });
+
+        // Draw the full card template PNG as background (full bleed)
+        doc.image(voucherDesignBuffer, 0, 0, {
+            width: cardWidthPts,
+            height: cardHeightPts
+        });
+
+        // ── Brand Logo at top-left ──
+        const logoX = cardWidthPts * 0.06;
+        const logoY = cardHeightPts * 0.08;
+        if (brandLogoBuffer) {
+            doc.image(brandLogoBuffer, logoX, logoY, {
+                fit: [30, 30]
+            });
+        } else if (brandName) {
+            // Fallback: draw brand name as text when no logo image is available
+            doc.fillColor('#000000').fontSize(7).font('Helvetica-Bold');
+            doc.text(brandName, logoX, logoY + 5, {
+                width: cardWidthPts * 0.50,
+                align: 'left',
+                lineBreak: false
+            });
+        }
+
+        // ── Custom Text on the left half of the card ──
+        // Positioned below the logo with good spacing. Text stays within the left ~55% of the card.
+        const textX = cardWidthPts * 0.06;
+        const maxTextWidth = cardWidthPts * 0.50;
+        let textY = cardHeightPts * 0.32;
+
+        if (voucherHeading) {
+            doc.fillColor('#1a1a1a').fontSize(14).font('Times-Bold');
+            doc.text(voucherHeading, textX, textY, {
+                width: maxTextWidth,
+                align: 'left',
+                lineBreak: true,
+                height: cardHeightPts * 0.35,
+                ellipsis: true
+            });
+            const headingHeight = doc.heightOfString(voucherHeading, { width: maxTextWidth });
+            textY += Math.min(headingHeight, cardHeightPts * 0.35) + 5;
+        }
+
+        if (voucherSubtext) {
+            doc.fillColor('#444444').fontSize(7).font('Helvetica');
+            doc.text(voucherSubtext, textX, textY, {
+                width: maxTextWidth,
+                align: 'left',
+                lineBreak: true,
+                height: cardHeightPts * 0.20,
+                ellipsis: true
+            });
+            const subHeight = doc.heightOfString(voucherSubtext, { width: maxTextWidth });
+            textY += Math.min(subHeight, cardHeightPts * 0.20) + 4;
+        }
+
+        if (voucherExtraText) {
+            doc.fillColor('#777777').fontSize(5).font('Helvetica-Oblique');
+            doc.text(voucherExtraText, textX, textY, {
+                width: maxTextWidth,
+                align: 'left',
+                lineBreak: true,
+                height: cardHeightPts * 0.12,
+                ellipsis: true
+            });
+        }
+
+        // ── QR Code inside the border box ──
+        const qrSize = cardHeightPts * qrSizePct;
+        const qrX = cardWidthPts * qrLeftPct;
+        const qrY = cardHeightPts * qrTopPct;
+
+        doc.image(pageBuffers[0], qrX, qrY, {
+            width: qrSize,
+            height: qrSize
+        });
+
+        if (qr.status === 'redeemed') {
+            doc.save();
+            doc.fillColor('white').fillOpacity(0.85);
+            doc.rect(qrX, qrY, qrSize, qrSize).fill();
+
+            doc.fillColor('red').fillOpacity(1);
+            doc.fontSize(10).font('Helvetica-Bold');
+            const centerX = qrX + (qrSize / 2);
+            const centerY = qrY + (qrSize / 2);
+            doc.translate(centerX, centerY);
+            doc.rotate(-45);
+            doc.text("CLAIMED", -30, -5, { width: 60, align: 'center', lineBreak: false });
+            doc.restore();
+        }
+
+        processedQrs += 1;
+        await reportProgress(onProgress, processedQrs);
+    }
+
+    return processedQrs;
 };
 
 async function generateQrPdf({
@@ -540,23 +776,52 @@ async function generateQrPdf({
     startSheetIndex,
     totalSheetCount,
     qrsPerSheet,
+    voucherDesignUrl,
+    voucherHeading = 'THANK YOU FOR SHOPPING WITH US.',
+    voucherSubtext = 'Scan the QR code below and receive your assured cashback reward.',
+    voucherExtraText = '',
     outputStream,
     onProgress
 }) {
+    // Check if we are in voucher card mode
+    const voucherDesignBuffer = getVoucherTemplateBuffer(voucherDesignUrl);
+    
+    // Create the document. If in voucher mode, suppress the first page 
+    // because we will add custom sized pages dynamically.
     const doc = new PDFDocument({
         size: 'A4',
-        margin: 30
+        margin: 30,
+        autoFirstPage: true
     });
+    
     const chunks = [];
     const resultPromise = createPdfResultPromise(doc, outputStream, chunks);
 
     try {
-        const brandLogoBuffer = await getBrandLogoBuffer(brandLogoUrl);
-        const safeQrCodes = Array.isArray(qrCodes) ? qrCodes : [];
-        const isPostpaid = planType === 'postpaid';
+    const vHeading = voucherHeading || 'THANK YOU FOR SHOPPING WITH US.';
+    const vSubtext = voucherSubtext || 'Scan the QR code below and receive your assured cashback reward.';
+    const vExtraText = voucherExtraText || '';
+
+    const brandLogoBuffer = await getBrandLogoBuffer(brandLogoUrl);
+    const safeQrCodes = Array.isArray(qrCodes) ? qrCodes : [];
+    const isPostpaid = planType === 'postpaid';
         let processedQrs = 0;
 
-        if (isPostpaid) {
+        // ── Voucher Card Mode ──
+        if (false && voucherDesignBuffer) {
+            processedQrs = await drawVoucherCards({
+                doc,
+                qrCodes: safeQrCodes,
+                voucherDesignBuffer,
+                brandName,
+                brandLogoBuffer,
+                voucherHeading: vHeading,
+                voucherSubtext: vSubtext,
+                voucherExtraText: vExtraText,
+                onProgress
+            });
+        } else if (isPostpaid) {
+            // ── Regular Postpaid Grid (no voucher design) ──
             const logicalQrsPerSheet = Number.isFinite(Number(qrsPerSheet)) && Number(qrsPerSheet) > 0
                 ? Number(qrsPerSheet)
                 : DEFAULT_QRS_PER_GRID_PAGE;
@@ -607,7 +872,8 @@ async function generateQrPdf({
                         pageBuffers,
                         yPos,
                         globalSheetIdx,
-                        pageStart
+                        pageStart,
+                        voucherDesignBuffer: null
                     });
 
                     processedQrs += pageQrs.length;
@@ -615,6 +881,7 @@ async function generateQrPdf({
                 }
             }
         } else {
+            // ── Regular Prepaid Grid (no voucher design) ──
             const pageHeight = 780;
             const qrSize = 80;
             const labelHeight = 35;
@@ -652,7 +919,8 @@ async function generateQrPdf({
                     doc,
                     pageQrs,
                     pageBuffers,
-                    startY: pageStartY
+                    startY: pageStartY,
+                    voucherDesignBuffer: null
                 });
 
                 cursor += pageQrs.length;

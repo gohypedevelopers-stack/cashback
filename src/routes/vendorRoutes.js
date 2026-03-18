@@ -60,6 +60,7 @@ const {
     createVendorSupportTicket,
     getVendorSupportTickets,
     assignSheetCashback,
+    updatePostpaidCampaignBatches,
     paySheetCashback
 } = require('../controllers/vendorController');
 
@@ -139,6 +140,7 @@ restrictedRouter.get('/campaigns/stats', getCampaignStats);
 restrictedRouter.get('/campaigns/:id/download', downloadCampaignQrPdf);
 restrictedRouter.post('/campaigns/:id/export', startCampaignBulkQrExport);
 restrictedRouter.put('/campaigns/:id/sheet-cashback', assignSheetCashback);
+restrictedRouter.put('/campaigns/:id/postpaid-batches', updatePostpaidCampaignBatches);
 restrictedRouter.post('/campaigns/:id/sheet-pay', paySheetCashback);
 
 // Product Management

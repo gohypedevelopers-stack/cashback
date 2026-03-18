@@ -1,4 +1,4 @@
-﻿const prisma = require('../config/prismaClient');
+const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { parsePagination } = require('../utils/pagination');
@@ -1388,6 +1388,8 @@ exports.getVendorCampaigns = async (req, res) => {
                     ...camp,
                     sheets,
                     qrsPerSheet,
+                    totalQrCount,
+                    actualTotalQrs: totalQrCount,
                     sheetCount: resolvePostpaidSheetCount(totalQrCount),
                     subtotal: totalBudgetFromSheets,
                     totalBudget: totalBudgetFromSheets
@@ -3880,6 +3882,109 @@ exports.paySheetCashback = async (req, res) => {
     }
 };
 
+
+// Update batches for a postpaid campaign (Rewrite cashback amounts for specific QR ranges)
+exports.updatePostpaidCampaignBatches = async (req, res) => {
+    try {
+        const { id: campaignId } = req.params;
+        const batches = Array.isArray(req.body) ? req.body : req.body?.batches;
+
+        if (!Array.isArray(batches)) {
+            return res.status(400).json({ message: 'Invalid batches payload' });
+        }
+
+        const vendor = await requireVendorProfile(prisma, req.user.id);
+        const campaign = await prisma.campaign.findUnique({
+            where: { id: campaignId },
+            include: { Brand: true }
+        });
+
+        if (!campaign || campaign.Brand?.vendorId !== vendor.id) {
+            return res.status(404).json({ message: 'Campaign not found' });
+        }
+
+        if (campaign.planType !== 'postpaid') {
+            return res.status(400).json({ message: 'Batch update is only for postpaid campaigns' });
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            const qrWhere = {
+                campaignId,
+                status: { in: POSTPAID_SHEET_QR_STATUSES }
+            };
+
+            const allQrs = await tx.qRCode.findMany({
+                where: qrWhere,
+                orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                select: { id: true, status: true, cashbackAmount: true }
+            });
+
+            if (!allQrs.length) {
+                const error = new Error('No QR codes found for this campaign');
+                error.status = 400;
+                throw error;
+            }
+
+            let cursor = 0;
+            let totalUpdatedCount = 0;
+
+            for (const batch of batches) {
+                const qty = Number(batch.quantity);
+                const amount = Number(batch.cashbackAmount);
+                
+                if (qty <= 0) continue;
+
+                // Take the segment of QRs corresponding to this batch
+                const batchQrs = allQrs.slice(cursor, cursor + qty);
+                const mutableIds = batchQrs
+                    .filter(qr => POSTPAID_MUTABLE_QR_STATUS_SET.has(qr.status))
+                    .map(qr => qr.id);
+
+                if (mutableIds.length > 0) {
+                    const updateResult = await tx.qRCode.updateMany({
+                        where: { id: { in: mutableIds } },
+                        data: { cashbackAmount: amount }
+                    });
+                    totalUpdatedCount += Number(updateResult?.count || 0);
+                }
+                cursor += qty;
+            }
+
+            // Recalculate campaign budget
+            const aggregate = await tx.qRCode.aggregate({
+                where: { campaignId },
+                _sum: { cashbackAmount: true }
+            });
+            const totalCashback = Number(aggregate?._sum?.cashbackAmount || 0);
+
+            await tx.campaign.update({
+                where: { id: campaignId },
+                data: {
+                    allocations: batches,
+                    subtotal: totalCashback,
+                    totalBudget: totalCashback
+                }
+            });
+
+            return {
+                totalUpdatedCount,
+                totalBudget: totalCashback
+            };
+        }, {
+            timeout: LARGE_TX_TIMEOUT_MS,
+            maxWait: LARGE_TX_MAX_WAIT_MS
+        });
+
+        res.json({
+            message: `Successfully updated ${result.totalUpdatedCount} QR codes across batches.`,
+            totalBudget: result.totalBudget
+        });
+    } catch (error) {
+        console.error('Update Postpaid Batches Error:', error);
+        res.status(error.status || 500).json({ message: error.message || 'Failed to update batches' });
+    }
+};
+
 // Download QR PDF for a campaign (already funded/redeemed QRs only)
 exports.downloadCampaignQrPdf = async (req, res) => {
     try {
@@ -4651,9 +4756,8 @@ exports.getVendorCustomers = async (req, res) => {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
         const { page, limit } = parsePagination(req, { defaultLimit: 25, maxLimit: 200 });
 
-        // Strip city/state from DB query — those fields are mostly null in RedemptionEvent.
-        // We filter on the aggregated firstScanLocation string post-processing instead.
-        const { city: filterCity, state: filterState, ...dbQueryParams } = req.query;
+        // Strip location from DB query — we filter on firstScanLocation post-processing instead.
+        const { location: filterLocation, ...dbQueryParams } = req.query;
         const where = buildRedemptionEventWhere(vendor, dbQueryParams);
         where.type = 'redeem_success';
         where.userId = { not: null };
@@ -4690,8 +4794,9 @@ exports.getVendorCustomers = async (req, res) => {
                     memberSince: event.createdAt,
                     lastScanned: event.createdAt
                 });
-                // Store coords for geocoding if no city/state
-                if (!locationStr) {
+                // Store coords for geocoding if location is missing or simple
+                const isSimple = !locationStr || !locationStr.includes(',') || locationStr.split(',').length < 2;
+                if (isSimple) {
                     const lat = Number(event.lat);
                     const lng = Number(event.lng);
                     if (Number.isFinite(lat) && Number.isFinite(lng)) {
@@ -4710,10 +4815,13 @@ exports.getVendorCustomers = async (req, res) => {
             rewardsEarned: toNumber(entry.rewardsEarned, 0)
         }));
 
-        // Reverse geocode customers with coordinates but no city name
-        const needsGeocode = customers.filter(
-            (c) => c.firstScanLocation === '-' && customerCoords.has(c.userId)
-        );
+        // Reverse geocode customers if location is missing or too simple (e.g., just city)
+        const needsGeocode = customers.filter((c) => {
+            if (!customerCoords.has(c.userId)) return false;
+            // Geocode if missing ('-') or very short (like only city name)
+            const loc = c.firstScanLocation || '';
+            return loc === '-' || !loc.includes(',') || loc.split(',').length < 2;
+        });
 
         if (needsGeocode.length > 0) {
             // Deduplicate coordinates (round to 3 decimals)
@@ -4729,11 +4837,11 @@ exports.getVendorCustomers = async (req, res) => {
             });
 
             const resolved = new Map();
-            const entries = Array.from(uniqueCoords.entries()).slice(0, 10);
+            const entries = Array.from(uniqueCoords.entries()).slice(0, 50);
 
             for (const [key, coord] of entries) {
                 try {
-                    const url = `https://nominatim.openstreetmap.org/reverse?lat=${coord.lat}&lon=${coord.lng}&format=json&zoom=10&accept-language=en`;
+                    const url = `https://nominatim.openstreetmap.org/reverse?lat=${coord.lat}&lon=${coord.lng}&format=json&zoom=18&accept-language=en`;
                     const controller = new AbortController();
                     const timeout = setTimeout(() => controller.abort(), 3000);
                     const response = await fetch(url, {
@@ -4745,18 +4853,38 @@ exports.getVendorCustomers = async (req, res) => {
                     if (response.ok) {
                         const data = await response.json();
                         const addr = data?.address || {};
-                        const city = addr.city || addr.town || addr.village || addr.suburb || addr.county || '';
+                        const landmark = addr.amenity || addr.building || addr.shop || addr.office || addr.leisure || '';
+                        const road = addr.road || '';
+                        let area = addr.suburb || addr.neighbourhood || '';
+                        area = area.replace(/\s+Tehsil/gi, '');
+                        const district = addr.city_district || addr.district || '';
+                        const city = addr.city || addr.town || addr.village || '';
                         const state = addr.state || '';
-                        const parts = [city, state].filter(Boolean);
-                        const locationStr = parts.join(', ') || 'Unknown';
+                        
+                        const displayParts = [landmark, road, area, district, city, state]
+                            .filter(Boolean)
+                            .map(s => s.trim());
+                        
+                        const uniqueParts = [];
+                        displayParts.forEach(p => {
+                            if (uniqueParts.length === 0 || uniqueParts[uniqueParts.length - 1] !== p) {
+                                uniqueParts.push(p);
+                            }
+                        });
+                        
+                        const locationStr = uniqueParts.join(', ') || 'Unknown';
                         resolved.set(key, { locationStr, city, state });
 
-                        // Persist resolved city/state back to DB (fire-and-forget)
-                        if (city || state) {
+                        const dbCityParts = [landmark, road, area, district, city]
+                            .filter(Boolean)
+                            .map(s => s.trim());
+                        const dbCity = dbCityParts.join(', ');
+
+                        if (dbCity || state) {
                             prisma.redemptionEvent.updateMany({
                                 where: { id: { in: coord.eventIds } },
                                 data: {
-                                    ...(city ? { city } : {}),
+                                    ...(dbCity ? { city: dbCity } : {}),
                                     ...(state ? { state } : {})
                                 }
                             }).catch(() => { /* ignore */ });
@@ -4769,7 +4897,6 @@ exports.getVendorCustomers = async (req, res) => {
 
             // Apply resolved locations to customers
             customers = customers.map((c) => {
-                if (c.firstScanLocation !== '-') return c;
                 const coord = customerCoords.get(c.userId);
                 if (!coord) return c;
                 const key = `${coord.lat.toFixed(3)}_${coord.lng.toFixed(3)}`;
@@ -4784,13 +4911,9 @@ exports.getVendorCustomers = async (req, res) => {
             const needle = String(req.query.mobile).trim();
             customers = customers.filter((entry) => String(entry.mobile || '').includes(needle));
         }
-        if (filterCity) {
-            const cityNeedle = String(filterCity).trim().toLowerCase();
-            customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(cityNeedle));
-        }
-        if (filterState) {
-            const stateNeedle = String(filterState).trim().toLowerCase();
-            customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(stateNeedle));
+        if (req.query.location) {
+            const needle = String(req.query.location).trim().toLowerCase();
+            customers = customers.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(needle));
         }
 
         const total = customers.length;
@@ -4850,6 +4973,18 @@ exports.exportVendorCustomers = async (req, res) => {
             existing.rewardsEarned += Number(event.amount || 0);
             existing.lastScanned = event.createdAt;
         });
+        
+        let customerList = Array.from(customerMap.values());
+        
+        // Post-processing filters on aggregated data
+        if (req.query.mobile) {
+            const needle = String(req.query.mobile).trim();
+            customerList = customerList.filter((entry) => String(entry.mobile || '').includes(needle));
+        }
+        if (req.query.location) {
+            const needle = String(req.query.location).trim().toLowerCase();
+            customerList = customerList.filter((entry) => String(entry.firstScanLocation || '').toLowerCase().includes(needle));
+        }
 
         const header = [
             'Name',
@@ -4860,7 +4995,7 @@ exports.exportVendorCustomers = async (req, res) => {
             'Member Since',
             'Last Scanned'
         ];
-        const rows = Array.from(customerMap.values()).map((entry) => [
+        const rows = customerList.map((entry) => [
             entry.name,
             entry.mobile,
             String(entry.codeCount),
