@@ -4303,7 +4303,7 @@ exports.getVendorRedemptions = async (req, res) => {
             };
         }
 
-        const [events, total] = await Promise.all([
+        let [events, total] = await Promise.all([
             prisma.redemptionEvent.findMany({
                 where,
                 skip,
@@ -4323,8 +4323,60 @@ exports.getVendorRedemptions = async (req, res) => {
             }),
             prisma.redemptionEvent.count({ where })
         ]);
+        let redemptions = [];
 
-        const redemptions = events.map(mapRedemptionEvent);
+        if (total === 0 && where.type === 'redeem_success') {
+            const legacyWhere = buildLegacyQrRedemptionWhere(vendor, req.query);
+            const [legacyQrs, legacyTotal] = await Promise.all([
+                prisma.qRCode.findMany({
+                    where: legacyWhere,
+                    skip,
+                    take: limit,
+                    select: {
+                        id: true,
+                        uniqueHash: true,
+                        campaignBudgetId: true,
+                        cashbackAmount: true,
+                        redeemedAt: true,
+                        redeemedByUserId: true,
+                        Campaign: {
+                            select: {
+                                id: true,
+                                title: true
+                            }
+                        }
+                    },
+                    orderBy: { redeemedAt: 'desc' }
+                }),
+                prisma.qRCode.count({ where: legacyWhere })
+            ]);
+
+            const userIds = [...new Set(
+                legacyQrs
+                    .map((qr) => qr.redeemedByUserId)
+                    .filter(Boolean)
+            )];
+            const users = userIds.length
+                ? await prisma.user.findMany({
+                    where: { id: { in: userIds } },
+                    select: { id: true, name: true, phoneNumber: true }
+                })
+                : [];
+            const userMap = new Map(users.map((user) => [user.id, user]));
+            const mobileNeedle = String(req.query.mobile || '').trim();
+
+            const legacyRedemptions = legacyQrs
+                .map((qr) => mapLegacyQrRedemption(qr, userMap.get(qr.redeemedByUserId)))
+                .filter((redemption) => {
+                    if (!mobileNeedle) return true;
+                    return String(redemption?.customer?.phone || '').includes(mobileNeedle);
+                });
+
+            redemptions = legacyRedemptions;
+            total = mobileNeedle ? legacyRedemptions.length : legacyTotal;
+        } else {
+            redemptions = events.map(mapRedemptionEvent);
+        }
 
         res.json({
             redemptions,
@@ -4494,6 +4546,36 @@ const buildRedemptionEventWhere = (vendor, query = {}) => {
     return where;
 };
 
+const buildLegacyQrRedemptionWhere = (vendor, query = {}) => {
+    const where = {
+        vendorId: vendor.id,
+        status: 'redeemed'
+    };
+
+    const dateRange = buildDateRange(query);
+    if (dateRange) where.redeemedAt = dateRange;
+
+    if (query.campaignId) where.campaignId = query.campaignId;
+    if (query.batchId) where.campaignBudgetId = query.batchId;
+    if (query.userId) where.redeemedByUserId = query.userId;
+    if (query.ownerScan === 'true') where.redeemedByUserId = vendor.userId;
+    if (query.nonOwnerScan === 'true') {
+        where.OR = [
+            { redeemedByUserId: { not: vendor.userId } },
+            { redeemedByUserId: null }
+        ];
+    }
+    if (query.productId) {
+        where.Campaign = {
+            is: {
+                productId: query.productId
+            }
+        };
+    }
+
+    return where;
+};
+
 const mapRedemptionEvent = (event) => {
     const userName = event?.User?.name || '';
     const maskedName = userName
@@ -4533,6 +4615,40 @@ const mapRedemptionEvent = (event) => {
             id: event.userId || null,
             name: userName,
             phone: phone
+        }
+    };
+};
+
+const mapLegacyQrRedemption = (qr, user) => {
+    const userName = user?.name || '';
+    const phone = user?.phoneNumber || '';
+
+    return {
+        id: `legacy-${qr.id}`,
+        createdAt: qr.redeemedAt || null,
+        amount: toNumber(qr.cashbackAmount, 0),
+        type: 'redeem_success',
+        city: null,
+        state: null,
+        pincode: null,
+        lat: null,
+        lng: null,
+        accuracyMeters: null,
+        qr: {
+            id: qr.id,
+            hash: qr.uniqueHash,
+            campaignBudgetId: qr.campaignBudgetId || null
+        },
+        campaign: qr.Campaign
+            ? {
+                id: qr.Campaign.id,
+                title: qr.Campaign.title
+            }
+            : null,
+        customer: {
+            id: qr.redeemedByUserId || null,
+            name: userName,
+            phone
         }
     };
 };
