@@ -4504,10 +4504,41 @@ const escapeCsvValue = (value) => {
     return `"${escaped}"`;
 };
 
+const buildVendorRedemptionOwnershipWhere = (vendor) => ({
+    OR: [
+        { vendorId: vendor.id },
+        {
+            Campaign: {
+                is: {
+                    Brand: { vendorId: vendor.id }
+                }
+            }
+        },
+        {
+            QRCode: {
+                is: {
+                    vendorId: vendor.id
+                }
+            }
+        }
+    ]
+});
+
+const buildVendorQrOwnershipWhere = (vendor) => ({
+    OR: [
+        { vendorId: vendor.id },
+        {
+            Campaign: {
+                is: {
+                    Brand: { vendorId: vendor.id }
+                }
+            }
+        }
+    ]
+});
+
 const buildRedemptionEventWhere = (vendor, query = {}) => {
-    const where = {
-        vendorId: vendor.id
-    };
+    const where = buildVendorRedemptionOwnershipWhere(vendor);
 
     const dateRange = buildDateRange(query);
     if (dateRange) where.createdAt = dateRange;
@@ -4548,7 +4579,7 @@ const buildRedemptionEventWhere = (vendor, query = {}) => {
 
 const buildLegacyQrRedemptionWhere = (vendor, query = {}) => {
     const where = {
-        vendorId: vendor.id,
+        ...buildVendorQrOwnershipWhere(vendor),
         status: 'redeemed'
     };
 
@@ -4657,14 +4688,7 @@ exports.exportVendorRedemptions = async (req, res) => {
     try {
         const { vendor } = await ensureVendorAndWallet(req.user.id);
 
-        const qrWhere = {
-            status: 'redeemed',
-            Campaign: { Brand: { vendorId: vendor.id } }
-        };
-
-        if (req.query.campaignId) {
-            qrWhere.campaignId = req.query.campaignId;
-        }
+        const qrWhere = buildLegacyQrRedemptionWhere(vendor, req.query);
 
         const qrs = await prisma.qRCode.findMany({
             where: qrWhere,
