@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon",
+    "postinstall": "node scripts/postinstall.cjs",
+    "prisma:generate": "prisma generate",
+    "patch:prisma": "node scripts/patch-prisma-wasm-loader.cjs",
     "studio": "prisma studio",
     "seed:admin": "node seed_admin.js",
     "test": "echo \"Error: no test specified\" && exit 1"

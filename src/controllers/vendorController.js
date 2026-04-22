@@ -1382,16 +1382,47 @@ exports.getVendorCampaigns = async (req, res) => {
                     });
                 }
 
-                const totalBudgetFromSheets = toNumber(
-                    sheets.reduce((sum, sheet) => sum + toNumber(sheet.assignedTotal, 0), 0),
-                    0
-                );
+                const totalBudgetFromSheets = sheets.reduce((sum, sheet) => sum + toNumber(sheet.assignedTotal, 0), 0);
+
+                // Enhancement: Calculate redemption counts for user-defined allocations/batches
+                let enhancedAllocations = camp.allocations;
+                if (Array.isArray(camp.allocations) && camp.allocations.length > 0) {
+                    const allCampaignQrs = await prisma.qRCode.findMany({
+                        where: { 
+                            campaignId: camp.id,
+                            status: { in: POSTPAID_SHEET_QR_STATUSES }
+                        },
+                        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                        select: { status: true }
+                    });
+
+                    let qrCursor = 0;
+                    enhancedAllocations = camp.allocations.map(alloc => {
+                        const quantity = Number.parseInt(alloc.quantity, 10) || 0;
+                        if (quantity <= 0) return { ...alloc, redeemedCount: 0, redeemedQrs: 0 };
+                        
+                        const batchQrs = allCampaignQrs.slice(qrCursor, qrCursor + quantity);
+                        const redeemedCount = batchQrs.filter(qr => qr.status === 'redeemed').length;
+                        qrCursor += quantity;
+                        
+                        return { 
+                            ...alloc, 
+                            redeemedCount,
+                            redeemedQrs: redeemedCount 
+                        };
+                    });
+                }
+
+
+
+
                 return {
                     ...camp,
                     sheets,
                     qrsPerSheet,
                     totalQrCount,
                     actualTotalQrs: totalQrCount,
+                    allocations: enhancedAllocations,
                     sheetCount: resolvePostpaidSheetCount(totalQrCount),
                     subtotal: totalBudgetFromSheets,
                     totalBudget: totalBudgetFromSheets
