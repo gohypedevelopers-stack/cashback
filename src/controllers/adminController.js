@@ -429,6 +429,13 @@ exports.getAllVendors = async (req, res) => {
 
         const [vendors, total] = await Promise.all([
             prisma.vendor.findMany({
+                where: {
+                    User: {
+                        status: {
+                            not: 'inactive'
+                        }
+                    }
+                },
                 include: {
                     User: true,
                     Wallet: true,
@@ -438,7 +445,15 @@ exports.getAllVendors = async (req, res) => {
                 take: limit,
                 orderBy: { createdAt: 'desc' }
             }),
-            prisma.vendor.count()
+            prisma.vendor.count({
+                where: {
+                    User: {
+                        status: {
+                            not: 'inactive'
+                        }
+                    }
+                }
+            })
         ]);
 
         res.json({
@@ -1187,6 +1202,46 @@ exports.updateUserStatus = async (req, res) => {
         res.json({ message: `User ${status}`, user });
     } catch (error) {
         res.status(500).json({ message: 'Update failed', error: error.message });
+    }
+};
+
+exports.deleteUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log(`[ADMIN] Deleting user account: ${id}`);
+
+        // Perform soft delete by setting status to inactive
+        // Also find and pause any associated vendor profile
+        const user = await prisma.user.update({
+            where: { id },
+            data: { 
+                status: 'inactive'
+            }
+        });
+
+        // Try to update vendor status if it exists
+        try {
+            await prisma.vendor.updateMany({
+                where: { userId: id },
+                data: { status: 'paused' }
+            });
+        } catch (vErr) {
+            console.error("Error pausing vendor during user deletion:", vErr);
+        }
+
+        safeLogActivity({
+            actorUserId: req.user?.id,
+            actorRole: req.user?.role,
+            action: 'user_delete',
+            entityType: 'user',
+            entityId: id,
+            metadata: { method: 'soft_delete' },
+            req
+        });
+
+        res.json({ message: 'User account deactivated (soft deleted)', userId: id });
+    } catch (error) {
+        res.status(500).json({ message: 'Delete failed', error: error.message });
     }
 };
 

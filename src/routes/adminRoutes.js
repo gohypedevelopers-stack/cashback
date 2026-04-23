@@ -14,7 +14,7 @@ const {
     getPendingWithdrawals, processWithdrawal,
     getAllSupportTickets, replySupportTicket, sendNotification, getNotifications,
     getAllOrders, updateOrderStatus,
-    deleteCampaign,
+    deleteCampaign, deleteUser,
     getSystemSettings, updateSystemSettings, getActivityLogs, getFinanceSummary
 } = require('../controllers/adminController');
 
@@ -85,6 +85,7 @@ router.get('/users', getAllUsers);
 router.get('/users/:id/overview', getUserOverview);
 router.put('/users/:id', updateUserDetails);
 router.put('/users/:id/status', updateUserStatus);
+router.delete('/users/:id', deleteUser);
 
 // System Audit
 router.get('/transactions', getAllTransactions);
