@@ -9,13 +9,11 @@ const getHealthStatus = async (req, res) => {
     const healthcheck = {
         status: 'UP',
         uptime: process.uptime(),
-        message: 'OK',
         timestamp: new Date().toISOString(),
         system: {
             platform: process.platform,
             nodeVersion: process.version,
             memoryUsage: process.memoryUsage(),
-            cpuLoad: os.loadavg(),
         },
         services: {
             database: 'UNKNOWN'
@@ -23,8 +21,13 @@ const getHealthStatus = async (req, res) => {
     };
 
     try {
-        // Test database connection
-        await prisma.$queryRaw`SELECT 1`;
+        // Test database connection with a timeout
+        const dbCheck = Promise.race([
+            prisma.$queryRaw`SELECT 1`,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Database timeout')), 3000))
+        ]);
+        
+        await dbCheck;
         healthcheck.services.database = 'UP';
     } catch (error) {
         healthcheck.status = 'DEGRADED';
