@@ -1,4 +1,4 @@
-﻿const prisma = require('../config/prismaClient');
+const prisma = require('../config/prismaClient');
 const { giftCardCategories, giftCards, storeTabs, storeCategories, vouchers, storeProducts } = require('../data/publicCatalog');
 
 const toPositiveNumber = (value) => {
@@ -131,11 +131,19 @@ exports.getHomeData = async (req, res) => {
                 .filter((banner) => banner.title || banner.subtitle || banner.img)
             : [];
 
-        // Get active campaigns
+        // Get active campaigns from active brands and active vendors
         const activeCampaigns = await prisma.campaign.findMany({
             where: {
                 status: 'active',
-                // endDate: { gt: new Date() } // Relaxing this just in case timezone causes issues
+                Brand: {
+                    status: 'active',
+                    Vendor: {
+                        status: 'active',
+                        User: {
+                            status: 'active'
+                        }
+                    }
+                }
             },
             include: {
                 Product: true,
@@ -181,7 +189,15 @@ exports.getHomeData = async (req, res) => {
         }
 
         const brands = await prisma.brand.findMany({
-            where: { status: 'active' },
+            where: { 
+                status: 'active',
+                Vendor: {
+                    status: 'active',
+                    User: {
+                        status: 'active'
+                    }
+                }
+            },
             take: 6,
             select: {
                 id: true,
@@ -198,9 +214,20 @@ exports.getHomeData = async (req, res) => {
             _count: undefined
         }));
 
-        // Featured Products
+        // Featured Products from active brands/vendors
         const featuredProductsRaw = await prisma.product.findMany({
-            where: { status: 'active' },
+            where: { 
+                status: 'active',
+                Brand: {
+                    status: 'active',
+                    Vendor: {
+                        status: 'active',
+                        User: {
+                            status: 'active'
+                        }
+                    }
+                }
+            },
             take: 4,
             orderBy: { createdAt: 'desc' },
             include: { Brand: true }
@@ -243,7 +270,18 @@ exports.getCatalog = async (req, res) => {
         if (category) whereClause.category = category;
 
         const productsRaw = await prisma.product.findMany({
-            where: whereClause,
+            where: {
+                ...whereClause,
+                Brand: {
+                    status: 'active',
+                    Vendor: {
+                        status: 'active',
+                        User: {
+                            status: 'active'
+                        }
+                    }
+                }
+            },
             include: { Brand: true }
         });
         res.json(productsRaw.map((product) => normalizeProduct(product)));
@@ -269,7 +307,15 @@ exports.getCategories = async (req, res) => {
 exports.getActiveBrands = async (req, res) => {
     try {
         const brands = await prisma.brand.findMany({
-            where: { status: 'active' },
+            where: { 
+                status: 'active',
+                Vendor: {
+                    status: 'active',
+                    User: {
+                        status: 'active'
+                    }
+                }
+            },
             select: { id: true, name: true, logoUrl: true, website: true }
         });
         res.json(brands);
@@ -282,8 +328,17 @@ exports.getBrandDetails = async (req, res) => {
     try {
         const { id } = req.params;
         const [brand, activeCampaigns] = await Promise.all([
-            prisma.brand.findUnique({
-                where: { id },
+            prisma.brand.findFirst({
+                where: { 
+                    id,
+                    status: 'active',
+                    Vendor: {
+                        status: 'active',
+                        User: {
+                            status: 'active'
+                        }
+                    }
+                },
                 include: {
                     Products: {
                         where: { status: 'active' }
