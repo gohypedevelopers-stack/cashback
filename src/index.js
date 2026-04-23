@@ -13,6 +13,8 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const walletRoutes = require('./routes/walletRoutes');
 const claimRoutes = require('./routes/claimRoutes');
+const iciciRoutes = require('./routes/iciciRoutes');
+const healthRoutes = require('./routes/healthRoutes');
 const path = require('path');
 const { startBulkExportWorker } = require('./services/bulkQrExportService');
 
@@ -47,6 +49,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/upload', uploadRoutes); // New Route
 app.use('/api/wallet', walletRoutes); // Wallet & Payout Routes
 app.use('/api/claim', claimRoutes); // Claim QR routes
+app.use('/api/icici', iciciRoutes); // ICICI Payment Callback
+app.use('/api/health', healthRoutes); // Health Check Endpoint
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
