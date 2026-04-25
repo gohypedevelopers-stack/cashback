@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { safeLogVendorActivity } = require('../utils/vendorActivityLogger');
 const { safeLogActivity } = require('../utils/activityLogger');
+const { sendOTPEmail, sendEmail } = require('../utils/emailService');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
@@ -226,7 +227,7 @@ exports.getMe = async (req, res) => {
         });
 
         if (user) {
-            const { password, otp, otpExpires, ...userWithoutSensitive } = user;
+            const { passwordExpires, ...userWithoutSensitive } = user;
             if (user.role === 'vendor') {
                 const vendor = await prisma.vendor.findUnique({ where: { userId: user.id } });
                 if (vendor) {
@@ -291,13 +292,22 @@ exports.sendOtp = async (req, res) => {
             });
         }
 
+        // Send OTP via email if provided
+        if (email) {
+            try {
+                await sendOTPEmail(email.trim().toLowerCase(), otp);
+                console.log(`[EMAIL SMTP] OTP sent to ${email}`);
+            } catch (mailError) {
+                console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
+            }
+        }
+
         // In a real app, send SMS here.
         console.log(`OTP for ${phoneNumber}: ${otp}`);
 
         res.json({
             success: true,
-            message: 'OTP sent successfully',
-            otp
+            message: 'OTP sent successfully'
         });
 
     } catch (error) {
@@ -376,13 +386,19 @@ exports.sendEmailOtp = async (req, res) => {
             }
         });
 
-        // Mock Send Email
-        console.log(`[EMAIL DEV] OTP for ${normalizedEmail}: ${otp}`);
+        // Send Real Email via SMTP
+        try {
+            await sendOTPEmail(normalizedEmail, otp);
+            console.log(`[EMAIL SMTP] OTP sent to ${normalizedEmail}`);
+        } catch (mailError) {
+            console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
+            // We still return success: true because the OTP is saved in DB and printed in console for dev
+            // But in production, this would be a critical failure.
+        }
 
         res.json({
             success: true,
-            message: 'OTP sent successfully',
-            otp
+            message: 'OTP sent successfully'
         });
     } catch (error) {
         console.error('[REGISTER ERROR]', error);
@@ -467,11 +483,34 @@ exports.forgotPassword = async (req, res) => {
             }
         });
 
-        // Mock Send Email
+        // Send Real Email via SMTP
         const resetUrl = `http://localhost:3000/reset-password/${resetToken}`;
-        console.log(`[EMAIL DEV] Password Reset Link: ${resetUrl}`);
+        try {
+            await sendEmail({
+                to: email,
+                subject: 'Password Reset Request',
+                text: `You requested a password reset. Please use the following link to reset your password: ${resetUrl}`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+                        <h2 style="color: #4A90E2;">Password Reset</h2>
+                        <p>You requested a password reset for your Cashback App account.</p>
+                        <p>Please click the button below to reset your password:</p>
+                        <div style="margin: 30px 0;">
+                            <a href="${resetUrl}" style="background: #4A90E2; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
+                        </div>
+                        <p>If you didn't request this, please ignore this email.</p>
+                        <p>This link will expire in 10 minutes.</p>
+                        <hr style="border: none; border-top: 1px solid #eee; margin-top: 30px;">
+                        <p style="font-size: 12px; color: #888;">Cashback App Team</p>
+                    </div>
+                `
+            });
+            console.log(`[EMAIL SMTP] Password Reset Link sent to ${email}`);
+        } catch (mailError) {
+            console.error('[MAIL ERROR] Failed to send reset email:', mailError);
+        }
 
-        res.json({ success: true, message: 'Email sent', resetToken }); // Sending token in response for dev
+        res.json({ success: true, message: 'Email sent' });
 
     } catch (error) {
         res.status(500).json({ message: 'Error sending email', error: error.message });

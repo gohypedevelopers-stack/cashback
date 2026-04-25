@@ -17,8 +17,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@prisma/client": "^5.16.1",
     "@prisma/adapter-pg": "^7.2.0",
+    "@prisma/client": "^5.16.1",
     "archiver": "^7.0.1",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
@@ -29,6 +29,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
+    "nodemailer": "^8.0.6",
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.17.2",
     "pg": "^8.16.3",
