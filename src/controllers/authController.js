@@ -58,26 +58,56 @@ const findUserByFlexibleUsername = async (loginUsername) => {
 exports.register = async (req, res) => {
     const { name, email, password, role, username } = req.body;
 
-    try {
-        const userExists = await prisma.user.findUnique({ where: { email } });
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
+    }
 
-        if (userExists) {
+    try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const trimmedUsername = username ? username.trim() : null;
+
+        // 1. Check if email is already fully registered
+        const userByEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        if (userByEmail && userByEmail.password) {
             return res.status(400).json({ message: 'User already exists' });
+        }
+
+        // 2. Check if username is already taken by someone else
+        if (trimmedUsername) {
+            const userByUsername = await prisma.user.findUnique({ where: { username: trimmedUsername } });
+            if (userByUsername && userByUsername.email !== normalizedEmail) {
+                return res.status(400).json({ message: 'Username already taken' });
+            }
         }
 
         // Hash password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const user = await prisma.user.create({
-            data: {
-                name,
-                email,
-                username,
-                password: hashedPassword,
-                role: role || 'customer'
-            }
-        });
+        let user;
+        if (userByEmail) {
+            // Update existing partial user (likely created by OTP verification)
+            user = await prisma.user.update({
+                where: { id: userByEmail.id },
+                data: {
+                    name: name || userByEmail.name,
+                    username: trimmedUsername || userByEmail.username,
+                    password: hashedPassword,
+                    role: role || userByEmail.role || 'customer'
+                }
+            });
+        } else {
+            // Create fresh user
+            user = await prisma.user.create({
+                data: {
+                    name,
+                    email: normalizedEmail,
+                    username: trimmedUsername,
+                    password: hashedPassword,
+                    role: role || 'customer'
+                }
+            });
+        }
 
         if (user) {
             res.status(201).json({
@@ -371,7 +401,7 @@ exports.sendEmailOtp = async (req, res) => {
     try {
         const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
-        if (!user) {
+        if (!user || user.role !== 'vendor') {
             return res.status(404).json({ message: 'User not found' });
         }
 
@@ -402,6 +432,99 @@ exports.sendEmailOtp = async (req, res) => {
         });
     } catch (error) {
         console.error('[REGISTER ERROR]', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.sendEmailVerificationOtp = async (req, res) => {
+    const { email, name } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
+    }
+
+    try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const otp = generateOTP();
+        const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+        let user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+        if (!user) {
+            user = await prisma.user.create({
+                data: {
+                    email: normalizedEmail,
+                    name: name || null,
+                    role: 'vendor',
+                    otp,
+                    otpExpires
+                }
+            });
+        } else {
+            user = await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    otp,
+                    otpExpires
+                }
+            });
+        }
+
+        try {
+            await sendOTPEmail(normalizedEmail, otp, 'vendor');
+            console.log(`[EMAIL SMTP] Verification OTP sent to ${normalizedEmail}`);
+        } catch (mailError) {
+            console.error('[MAIL ERROR] Failed to send Verification OTP email:', mailError);
+        }
+
+        res.json({
+            success: true,
+            message: 'OTP sent successfully to email'
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.verifyEmailVerificationOtp = async (req, res) => {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+        return res.status(400).json({ message: 'Email and OTP are required' });
+    }
+
+    try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+        if (!user) {
+            return res.status(400).json({ message: 'User not found' });
+        }
+
+        if (user.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid OTP' });
+        }
+
+        if (user.otpExpires && new Date() > user.otpExpires) {
+            return res.status(400).json({ message: 'OTP Expired' });
+        }
+
+        // Clear OTP
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                otp: null,
+                otpExpires: null
+            }
+        });
+
+        res.json({
+            success: true,
+            message: 'Email verified successfully'
+        });
+
+    } catch (error) {
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };

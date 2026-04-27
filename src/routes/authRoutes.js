@@ -12,7 +12,9 @@ const {
     resetPassword,
     setPassword,
     registerVendor,
-    checkUsername
+    checkUsername,
+    sendEmailVerificationOtp,
+    verifyEmailVerificationOtp
 } = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -24,6 +26,8 @@ router.get('/me', protect, getMe);
 router.post('/send-otp', sendOtp);
 router.post('/verify-otp', verifyOtp);
 router.post('/send-email-otp', sendEmailOtp);
+router.post('/send-email-verification-otp', sendEmailVerificationOtp);
+router.post('/verify-email-verification-otp', verifyEmailVerificationOtp);
 router.post('/reset-password-otp', resetPasswordWithOtp);
 
 router.post('/forgot-password', forgotPassword);

@@ -43,8 +43,13 @@ const sendEmail = async ({ to, subject, text, html }) => {
  * @param {string} email - Recipient email address
  * @param {string} otp - The 6-digit OTP code
  */
-const sendOTPEmail = async (email, otp) => {
+const sendOTPEmail = async (email, otp, context = 'wallet') => {
+  const isVendor = context === 'vendor';
   const subject = `${otp} is your verification code`;
+  const contextMessage = isVendor 
+    ? `Use the verification code below to verify your work email for Brand Registration.`
+    : `Use the verification code below to sign in to your Cashback App wallet.`;
+  const appName = isVendor ? `Cashback Vendor Portal` : `Cashback App`;
   const text = `Your verification code is: ${otp}. It will expire in 10 minutes.`;
   const html = `
     <!DOCTYPE html>
@@ -74,7 +79,7 @@ const sendOTPEmail = async (email, otp) => {
                 <td style="padding: 0 40px 40px 40px; text-align: center;">
                   <p style="margin: 0 0 24px 0; color: #64748b; font-size: 16px; line-height: 24px;">
                     Hello,<br>
-                    Use the verification code below to sign in to your Cashback App wallet.
+                    ${contextMessage}
                   </p>
                   
                   <div style="background-color: #f1f5f9; border-radius: 16px; padding: 32px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
@@ -93,7 +98,7 @@ const sendOTPEmail = async (email, otp) => {
               <!-- Footer -->
               <tr>
                 <td style="padding: 32px 40px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;">
-                  <p style="margin: 0 0 8px 0; color: #1e293b; font-size: 14px; font-weight: 700;">Cashback App</p>
+                  <p style="margin: 0 0 8px 0; color: #1e293b; font-size: 14px; font-weight: 700;">${appName}</p>
                   <p style="margin: 0; color: #94a3b8; font-size: 12px;">© 2026 Assured Rewards. All rights reserved.</p>
                 </td>
               </tr>
