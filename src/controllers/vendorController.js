@@ -5526,7 +5526,7 @@ exports.shareVendorInvoice = async (req, res) => {
         }
 
         const result = await prisma.$transaction((tx) => withShareToken(tx, invoice.id, 72));
-        const shareUrl = `${req.protocol}://${req.get('host')}/api/public/invoices/shared/${result.token}`;
+        const shareUrl = `${req.protocol}://${req.get('host')}/api/public/invoices/shared/${result.token}/invoice.pdf`;
 
         res.json({
             shareToken: result.token,

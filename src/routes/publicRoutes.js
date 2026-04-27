@@ -39,5 +39,6 @@ router.get('/content/:slug', getStaticPage); // Static Pages (terms, privacy)
 router.get('/coupons', getPublicCoupons);
 router.get('/coupons/:id', getCouponDetails);
 router.get('/invoices/shared/:token', getSharedInvoice);
+router.get('/invoices/shared/:token/:filename', getSharedInvoice);
 
 module.exports = router;
