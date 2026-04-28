@@ -1,4 +1,4 @@
-﻿const prisma = require('../config/prismaClient');
+const prisma = require('../config/prismaClient');
 const { safeLogActivity } = require('../utils/activityLogger');
 const {
     spendLocked,
@@ -190,13 +190,13 @@ exports.scanAndRedeem = async (req, res) => {
         }
 
         const result = await prisma.$transaction(async (tx) => {
-            // Lock QR row so concurrent sheet value updates cannot change cashback mid-redemption.
-            const lockedQr = await tx.$queryRaw`
-                SELECT "id"
-                FROM "QRCode"
-                WHERE "id" = ${previewQr.id}
-                FOR UPDATE
-            `;
+            // Lock BOTH QR and Wallet row-level to prevent race conditions (Overspending balance)
+            // This forces concurrent redemptions for the same vendor to queue up.
+            const [lockedQr] = await Promise.all([
+                tx.$queryRaw`SELECT "id" FROM "QRCode" WHERE "id" = ${previewQr.id} FOR UPDATE`,
+                tx.$queryRaw`SELECT "id" FROM "Wallet" WHERE "vendorId" = ${previewQr.vendorId} FOR UPDATE`
+            ]);
+
             if (!Array.isArray(lockedQr) || !lockedQr.length) {
                 throw createHttpError('Invalid QR Code', 404);
             }

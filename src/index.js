@@ -19,8 +19,20 @@ const path = require('path');
 const { startBulkExportWorker } = require('./services/bulkQrExportService');
 
 const app = express();
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+    ? process.env.ALLOWED_ORIGINS.split(',') 
+    : ['http://localhost:3000', 'http://localhost:5173'];
+
 const corsOptions = {
-    origin: true,
+    origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps or curl)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -37,7 +49,8 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Serve Uploads Static Folder
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Static folder for public assets ONLY (if any). Sensitive uploads are now served via /api/upload/:filename
+// app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Routes
 app.use('/api/auth', authRoutes);

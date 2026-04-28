@@ -1631,13 +1631,13 @@ exports.updateVendorProfile = async (req, res) => {
 
 exports.requestCredentialUpdate = async (req, res) => {
     try {
-        const { username, password } = req.body || {};
+        const { username } = req.body || {};
         const trimmedUsername = typeof username === 'string' ? username.trim() : '';
         const hasUsername = trimmedUsername.length > 0;
-        const hasPassword = typeof password === 'string' && password.length > 0;
 
-        if (!hasUsername && !hasPassword) {
-            return res.status(400).json({ message: 'Provide a username or password to request an update' });
+
+        if (!hasUsername) {
+            return res.status(400).json({ message: 'Provide a username to request an update' });
         }
 
         const vendor = await prisma.vendor.findUnique({
@@ -1658,7 +1658,7 @@ exports.requestCredentialUpdate = async (req, res) => {
 
         const updatePayload = {};
         if (hasUsername) updatePayload.requestedUsername = trimmedUsername;
-        if (hasPassword) updatePayload.requestedPassword = await bcrypt.hash(password, 10);
+
 
         if (!Object.keys(updatePayload).length) {
             return res.status(400).json({ message: 'No credential updates provided' });

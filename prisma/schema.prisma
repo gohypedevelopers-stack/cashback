@@ -17,6 +17,7 @@ model User {
   status               Status              @default(active)
   otp                  String?
   otpExpires           DateTime?
+  otpLastSent          DateTime?
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
   avatarUrl            String?
@@ -440,7 +441,6 @@ model CredentialRequest {
   vendorId          String
   userId            String
   requestedUsername String?
-  requestedPassword String?
   status            CredentialRequestStatus @default(pending)
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt

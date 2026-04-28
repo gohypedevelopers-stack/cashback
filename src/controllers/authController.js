@@ -8,7 +8,7 @@ const { sendOTPEmail, sendEmail } = require('../utils/emailService');
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
-        expiresIn: '30d'
+        expiresIn: '15m' // Short-lived access token
     });
 };
 
@@ -310,6 +310,19 @@ exports.sendOtp = async (req, res) => {
 
         let user = await prisma.user.findUnique({ where: { phoneNumber } });
 
+        // SECURITY: OTP Rate Limiting
+        const now = new Date();
+        if (user && user.otpLastSent) {
+            const timeSinceLastOtp = now.getTime() - new Date(user.otpLastSent).getTime();
+            const COOLDOWN_MS = 60 * 1000;
+            if (timeSinceLastOtp < COOLDOWN_MS) {
+                const waitTime = Math.ceil((COOLDOWN_MS - timeSinceLastOtp) / 1000);
+                return res.status(429).json({ 
+                    message: `Please wait ${waitTime} seconds before requesting a new OTP.` 
+                });
+            }
+        }
+
         if (!user) {
             // Create new partial user
             user = await prisma.user.create({
@@ -319,14 +332,16 @@ exports.sendOtp = async (req, res) => {
                     email: email || null,
                     role: 'customer',
                     otp,
-                    otpExpires
+                    otpExpires,
+                    otpLastSent: new Date()
                 }
             });
         } else {
             // Update existing user OTP and sync name/email if provided
             const updateData = {
                 otp,
-                otpExpires
+                otpExpires,
+                otpLastSent: new Date()
             };
             if (name) updateData.name = name;
             if (email) updateData.email = email;
@@ -420,6 +435,20 @@ exports.sendEmailOtp = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
+        // SECURITY: OTP Rate Limiting / Resend Cooldown
+        const now = new Date();
+        if (user.otpLastSent) {
+            const timeSinceLastOtp = now.getTime() - new Date(user.otpLastSent).getTime();
+            const COOLDOWN_MS = 60 * 1000; // 1 minute cooldown
+
+            if (timeSinceLastOtp < COOLDOWN_MS) {
+                const waitTime = Math.ceil((COOLDOWN_MS - timeSinceLastOtp) / 1000);
+                return res.status(429).json({ 
+                    message: `Please wait ${waitTime} seconds before requesting a new OTP.` 
+                });
+            }
+        }
+
         const otp = generateOTP();
         const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
@@ -427,7 +456,8 @@ exports.sendEmailOtp = async (req, res) => {
             where: { id: user.id },
             data: {
                 otp,
-                otpExpires
+                otpExpires,
+                otpLastSent: new Date()
             }
         });
 

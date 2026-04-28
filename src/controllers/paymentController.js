@@ -2,6 +2,7 @@ const prisma = require('../config/prismaClient');
 const crypto = require('crypto');
 const razorpay = require('../config/razorpay');
 const { safeLogActivity } = require('../utils/activityLogger');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
 const isValidUpiId = (value) => /^[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}$/.test(value || '');
@@ -73,11 +74,19 @@ exports.addPayoutMethod = async (req, res) => {
             data: {
                 userId,
                 type: payload.type,
-                value: payload.value,
-                details: payload.details,
+                value: encrypt(payload.value),
+                details: payload.details ? JSON.parse(JSON.stringify(payload.details)) : null, // Prisma handles Json?
                 isPrimary: !existingPrimary // Auto-set primary if first one
             }
         });
+        
+        // SECURITY: Encrypt JSON details if present
+        if (method.details) {
+            await prisma.payoutMethod.update({
+                where: { id: method.id },
+                data: { details: encrypt(JSON.stringify(payload.details)) }
+            });
+        }
 
         res.status(201).json({ message: 'Payout method added', method });
     } catch (error) {
@@ -90,7 +99,20 @@ exports.getPayoutMethods = async (req, res) => {
         const methods = await prisma.payoutMethod.findMany({
             where: { userId: req.user.id }
         });
-        res.json(methods);
+        
+        const decryptedMethods = methods.map(m => {
+            try {
+                return {
+                    ...m,
+                    value: decrypt(m.value),
+                    details: m.details && typeof m.details === 'string' ? JSON.parse(decrypt(m.details)) : m.details
+                };
+            } catch (e) {
+                return m; // Fallback for old unencrypted data
+            }
+        });
+
+        res.json(decryptedMethods);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching methods', error: error.message });
     }
@@ -126,16 +148,24 @@ exports.requestWithdrawal = async (req, res) => {
         const { amount, payoutMethodId } = req.body;
         const userId = req.user.id;
 
-        // 1. Get Wallet
-        // Try user wallet first, then vendor wallet.
-        let wallet = await prisma.wallet.findUnique({ where: { userId } });
-
-        if (!wallet) {
-            const vendor = await prisma.vendor.findUnique({ where: { userId } });
-            if (vendor) {
-                wallet = await prisma.wallet.findUnique({ where: { vendorId: vendor.id } });
+        // 1. Get Wallet with ROW LOCK to prevent race conditions
+        const wallet = await prisma.$transaction(async (tx) => {
+            // Find wallet ID first
+            let w = await tx.wallet.findUnique({ where: { userId } });
+            if (!w) {
+                const vendor = await tx.vendor.findUnique({ where: { userId } });
+                if (vendor) {
+                    w = await tx.wallet.findUnique({ where: { vendorId: vendor.id } });
+                }
             }
-        }
+            if (!w) return null;
+
+            // Lock the row
+            await tx.$queryRaw`SELECT "id" FROM "Wallet" WHERE "id" = ${w.id} FOR UPDATE`;
+            
+            // Return fresh data
+            return await tx.wallet.findUnique({ where: { id: w.id } });
+        });
 
         if (!wallet) {
             return res.status(404).json({ message: 'Wallet not found' });
@@ -244,13 +274,22 @@ exports.requestWithdrawal = async (req, res) => {
 
         // 4. Create Withdrawal Request Transactionally
         const withdrawal = await prisma.$transaction(async (tx) => {
-            // Deduct Balance & Move to Locked? 
-            // Or just deduct and log?
-            // Usually, we deduct immediately to prevent double spend.
+            // Lock the row to prevent race conditions (Overspending)
+            await tx.$queryRaw`SELECT "id" FROM "Wallet" WHERE "id" = ${wallet.id} FOR UPDATE`;
+            
+            // Re-fetch fresh balance after lock
+            const lockedWallet = await tx.wallet.findUnique({ where: { id: wallet.id } });
+            if (Number(lockedWallet.balance) < numericAmount) {
+                throw new Error('Insufficient balance');
+            }
 
+            // Deduct from Balance and move to LockedBalance
             await tx.wallet.update({
                 where: { id: wallet.id },
-                data: { balance: { decrement: numericAmount } }
+                data: {
+                    balance: { decrement: numericAmount },
+                    lockedBalance: { increment: numericAmount }
+                }
             });
 
             // Create Transaction Log

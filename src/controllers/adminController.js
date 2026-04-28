@@ -871,8 +871,8 @@ exports.processWithdrawal = async (req, res) => {
         const { id } = req.params;
         const { status, referenceId, adminNote, reason } = req.body; // status: 'processed' or 'rejected'
 
-        if (!['processed', 'rejected'].includes(status)) {
-            return res.status(400).json({ message: 'Invalid status' });
+        if (!['completed', 'failed'].includes(status)) {
+            return res.status(400).json({ message: 'Invalid status. Use completed or failed.' });
         }
 
         const result = await prisma.$transaction(async (tx) => {
@@ -887,29 +887,51 @@ exports.processWithdrawal = async (req, res) => {
                     status,
                     referenceId,
                     adminNote,
-                    rejectionReason: status === 'rejected' ? reason : null
+                    rejectionReason: status === 'failed' ? reason : null
                 }
             });
 
-            if (status === 'rejected') {
-                // Refund Balance
+            const numericAmount = Number(withdrawal.amount);
+            
+            // Get current wallet state
+            const wallet = await tx.wallet.findUnique({ where: { id: withdrawal.walletId } });
+            if (!wallet) throw new Error('Wallet not found');
+
+            const currentLocked = Number(wallet.lockedBalance);
+            console.log(`[AdminProcess] ID: ${id}, Amount: ${numericAmount}, Wallet: ${wallet.id}, CurrentLocked: ${currentLocked}`);
+
+            if (status === 'failed') {
+                // Return money to balance and unlock
                 await tx.wallet.update({
-                    where: { id: withdrawal.walletId },
-                    data: { balance: { increment: withdrawal.amount } }
+                    where: { id: wallet.id },
+                    data: {
+                        balance: { increment: numericAmount },
+                        lockedBalance: Math.max(0, currentLocked - numericAmount)
+                    }
+                });
+            } else if (status === 'completed') {
+                // Just unlock
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: {
+                        lockedBalance: Math.max(0, currentLocked - numericAmount)
+                    }
                 });
 
-                // Log Refund Transaction
+                // Create transaction record for audit
                 await tx.transaction.create({
                     data: {
-                        walletId: withdrawal.walletId,
-                        type: 'credit',
-                        amount: withdrawal.amount,
-                        category: 'refund',
+                        walletId: wallet.id,
+                        type: 'debit',
+                        amount: numericAmount,
+                        category: 'withdrawal',
                         status: 'success',
-                        description: `Refund: Withdrawal Rejected. Reason: ${reason || adminNote || ''}`
+                        description: 'Withdrawal completed',
+                        referenceId: referenceId || id
                     }
                 });
             }
+            console.log(`[AdminProcess] Wallet ${wallet.id} updated successfully.`);
 
             return updatedWithdrawal;
         });
@@ -1726,7 +1748,13 @@ exports.adjustWalletBalance = async (req, res) => {
             const wallet = await tx.wallet.findUnique({ where: { vendorId } });
             if (!wallet) throw new Error('Wallet not found');
 
-            if (normalizedType === 'debit' && Number(wallet.balance) < parsedAmount) {
+            // Lock row level to prevent race conditions during adjustment
+            await tx.$queryRaw`SELECT "id" FROM "Wallet" WHERE "id" = ${wallet.id} FOR UPDATE`;
+            
+            // Re-fetch fresh data after acquiring lock
+            const lockedWallet = await tx.wallet.findUnique({ where: { id: wallet.id } });
+
+            if (normalizedType === 'debit' && Number(lockedWallet.balance) < parsedAmount) {
                 throw new Error('Insufficient wallet balance');
             }
 
@@ -2313,11 +2341,8 @@ exports.approveCredentialRequest = async (req, res) => {
             updates.username = desiredUsername;
         }
 
-        if (password) {
-            updates.password = await bcrypt.hash(password, 10);
-        } else if (request.requestedPassword) {
-            updates.password = request.requestedPassword;
-        }
+        // SECURITY: Remove password updates from admin approval flow.
+        // Users must use reset/setup flows for password changes.
 
         if (!Object.keys(updates).length) {
             return res.status(400).json({ message: 'No credential updates provided' });

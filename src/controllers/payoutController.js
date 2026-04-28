@@ -1,5 +1,6 @@
 const prisma = require('../config/prismaClient');
 const { safeLogActivity } = require('../utils/activityLogger');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 // Process Payout (Admin/System use)
 exports.processPayout = async (req, res) => {
@@ -41,12 +42,13 @@ exports.processPayout = async (req, res) => {
             const wallet = withdrawal.Wallet;
             const amount = parseFloat(withdrawal.amount);
 
+            const decryptedValue = decrypt(withdrawal.PayoutMethod.value);
+
             if (status === 'completed') {
-                // Debit wallet balance and unlock
+                // Unlock balance (it was already deducted from 'balance' during request)
                 await tx.wallet.update({
                     where: { id: wallet.id },
                     data: {
-                        balance: { decrement: amount },
                         lockedBalance: { decrement: amount }
                     }
                 });
@@ -59,7 +61,7 @@ exports.processPayout = async (req, res) => {
                         amount: amount,
                         category: 'withdrawal',
                         status: 'success',
-                        description: `UPI Payout to ${withdrawal.PayoutMethod.value}`,
+                        description: `UPI Payout to ${decryptedValue}`,
                         referenceId: referenceId || withdrawal.id
                     }
                 });
@@ -69,21 +71,22 @@ exports.processPayout = async (req, res) => {
                     data: {
                         userId: wallet.userId,
                         title: 'Payout Successful',
-                        message: `₹${amount} has been sent to your UPI: ${withdrawal.PayoutMethod.value}`,
+                        message: `₹${amount} has been sent to your UPI: ${decryptedValue}`,
                         type: 'payout-success',
                         metadata: {
                             withdrawalId: withdrawal.id,
                             amount: amount,
-                            upi: withdrawal.PayoutMethod.value
+                            upi: decryptedValue
                         }
                     }
                 });
 
             } else if (status === 'failed') {
-                // Unlock balance (don't debit)
+                // Return money to balance and unlock
                 await tx.wallet.update({
                     where: { id: wallet.id },
                     data: {
+                        balance: { increment: amount },
                         lockedBalance: { decrement: amount }
                     }
                 });
@@ -173,7 +176,9 @@ exports.getAllWithdrawals = async (req, res) => {
                 amount: parseFloat(w.amount),
                 status: w.status,
                 user: w.Wallet.User,
-                payoutMethod: w.PayoutMethod.value,
+                payoutMethod: (function() {
+                    try { return decrypt(w.PayoutMethod.value); } catch(e) { return w.PayoutMethod.value; }
+                })(),
                 referenceId: w.referenceId,
                 createdAt: w.createdAt,
                 updatedAt: w.updatedAt
@@ -237,7 +242,7 @@ exports.addUPIMethod = async (req, res) => {
                 data: {
                     userId,
                     type: 'upi',
-                    value: upiId,
+                    value: encrypt(upiId),
                     isPrimary: setAsPrimary || false
                 }
             });
