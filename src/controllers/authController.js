@@ -327,12 +327,15 @@ exports.sendOtp = async (req, res) => {
         }
 
         if (!user) {
+            if (!name || !email) {
+                return res.status(404).json({ message: 'Account not found. Please sign up.' });
+            }
             // Create new partial user
             user = await prisma.user.create({
                 data: {
                     phoneNumber,
-                    name: name || null,
-                    email: email || null,
+                    name: name.trim(),
+                    email: email.trim().toLowerCase(),
                     role: 'customer',
                     otp,
                     otpExpires,
@@ -346,8 +349,8 @@ exports.sendOtp = async (req, res) => {
                 otpExpires,
                 otpLastSent: new Date()
             };
-            if (name) updateData.name = name;
-            if (email) updateData.email = email;
+            if (name) updateData.name = name.trim();
+            if (email) updateData.email = email.trim().toLowerCase();
 
             user = await prisma.user.update({
                 where: { phoneNumber },
@@ -355,11 +358,12 @@ exports.sendOtp = async (req, res) => {
             });
         }
 
-        // Send OTP via email if provided
-        if (email) {
+        // Send OTP via email
+        const targetEmail = email ? email.trim().toLowerCase() : user.email;
+        if (targetEmail) {
             try {
-                await sendOTPEmail(email.trim().toLowerCase(), otp);
-                console.log(`[EMAIL SMTP] OTP sent to ${email}`);
+                await sendOTPEmail(targetEmail, otp);
+                console.log(`[EMAIL SMTP] OTP sent to ${targetEmail}`);
             } catch (mailError) {
                 console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
             }
