@@ -664,7 +664,7 @@ exports.forgotPassword = async (req, res) => {
                 html: `
                     <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
                         <h2 style="color: #4A90E2;">Password Reset</h2>
-                        <p>You requested a password reset for your Cashback App account.</p>
+                        <p>You requested a password reset for your Assured Rewards account.</p>
                         <p>Please click the button below to reset your password:</p>
                         <div style="margin: 30px 0;">
                             <a href="${resetUrl}" style="background: #4A90E2; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Reset Password</a>
@@ -672,7 +672,7 @@ exports.forgotPassword = async (req, res) => {
                         <p>If you didn't request this, please ignore this email.</p>
                         <p>This link will expire in 10 minutes.</p>
                         <hr style="border: none; border-top: 1px solid #eee; margin-top: 30px;">
-                        <p style="font-size: 12px; color: #888;">Cashback App Team</p>
+                        <p style="font-size: 12px; color: #888;">Assured Rewards Team</p>
                     </div>
                 `
             });

@@ -48,8 +48,8 @@ const sendOTPEmail = async (email, otp, context = 'wallet') => {
   const subject = `${otp} is your verification code`;
   const contextMessage = isVendor 
     ? `Use the verification code below to verify your work email for Brand Registration.`
-    : `Use the verification code below to sign in to your Cashback App wallet.`;
-  const appName = isVendor ? `Cashback Vendor Portal` : `Cashback App`;
+    : `Use the verification code below to sign in to your Assured Rewards wallet.`;
+  const appName = isVendor ? `Assured Rewards Vendor Portal` : `Assured Rewards`;
   const text = `Your verification code is: ${otp}. It will expire in 10 minutes.`;
   const html = `
     <!DOCTYPE html>
