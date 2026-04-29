@@ -169,13 +169,14 @@ exports.getTransactionHistory = async (req, res) => {
 
 exports.updateUserProfile = async (req, res) => {
     try {
-        const { name, email, username, phoneNumber } = req.body || {};
+        const { name, email, username, phoneNumber, dob } = req.body || {};
 
         const updates = {};
         if (typeof name === 'string') updates.name = name.trim() || null;
         if (typeof email === 'string') updates.email = email.trim().toLowerCase() || null;
         if (typeof username === 'string') updates.username = username.trim() || null;
         if (typeof phoneNumber === 'string') updates.phoneNumber = phoneNumber.trim() || null;
+        if (typeof dob === 'string') updates.dob = dob.trim() || null;
 
         if (!Object.keys(updates).length) {
             return res.status(400).json({ message: 'No profile updates provided' });

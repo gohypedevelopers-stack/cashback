@@ -301,17 +301,34 @@ exports.getMe = async (req, res) => {
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 exports.sendOtp = async (req, res) => {
-    const { phoneNumber, name, email, dob } = req.body;
+    const { email, phoneNumber, name, dob } = req.body; 
  
-    if (!phoneNumber) {
-        return res.status(400).json({ message: 'Phone number is required' });
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
     }
  
     try {
         const otp = generateOTP();
         const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
  
-        let user = await prisma.user.findUnique({ where: { phoneNumber } });
+        const normalizedEmail = email.trim().toLowerCase();
+        let user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+
+        // If it's a signup (name is provided), ensure account doesn't already exist
+        if (name) {
+            let existingPhoneUser = null;
+            if (phoneNumber) {
+                existingPhoneUser = await prisma.user.findUnique({ where: { phoneNumber: phoneNumber.trim() } });
+            }
+
+            if (user && existingPhoneUser && user.id === existingPhoneUser.id) {
+                return res.status(400).json({ message: 'User is already registered. Please login.' });
+            } else if (user) {
+                return res.status(400).json({ message: 'Email is already registered. Please login.' });
+            } else if (existingPhoneUser) {
+                return res.status(400).json({ message: 'Phone number is already registered. Please login.' });
+            }
+        }
  
         // SECURITY: OTP Rate Limiting
         const now = new Date();
@@ -327,15 +344,15 @@ exports.sendOtp = async (req, res) => {
         }
  
         if (!user) {
-            if (!name || !email) {
+            if (!name) {
                 return res.status(404).json({ message: 'Account not found. Please sign up.' });
             }
             // Create new partial user
             user = await prisma.user.create({
                 data: {
-                    phoneNumber,
+                    email: normalizedEmail,
+                    phoneNumber: phoneNumber ? phoneNumber.trim() : undefined,
                     name: name.trim(),
-                    email: email.trim().toLowerCase(),
                     dob: dob ? dob.trim() : null,
                     role: 'customer',
                     otp,
@@ -344,35 +361,28 @@ exports.sendOtp = async (req, res) => {
                 }
             });
         } else {
-            // Update existing user OTP and sync name/email if provided
+            // Update existing user OTP (this block only runs for login now)
             const updateData = {
                 otp,
                 otpExpires,
                 otpLastSent: new Date()
             };
-            if (name) updateData.name = name.trim();
-            if (email) updateData.email = email.trim().toLowerCase();
-            if (dob) updateData.dob = dob.trim();
  
             user = await prisma.user.update({
-                where: { phoneNumber },
+                where: { email: normalizedEmail },
                 data: updateData
             });
         }
 
         // Send OTP via email
-        const targetEmail = email ? email.trim().toLowerCase() : user.email;
-        if (targetEmail) {
-            try {
-                await sendOTPEmail(targetEmail, otp);
-                console.log(`[EMAIL SMTP] OTP sent to ${targetEmail}`);
-            } catch (mailError) {
-                console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
-            }
+        try {
+            await sendOTPEmail(normalizedEmail, otp);
+            console.log(`[EMAIL SMTP] OTP sent to ${normalizedEmail}`);
+        } catch (mailError) {
+            console.error('[MAIL ERROR] Failed to send OTP email:', mailError);
         }
 
-        // In a real app, send SMS here.
-        console.log(`OTP for ${phoneNumber}: ${otp}`);
+        console.log(`OTP for ${normalizedEmail}: ${otp}`);
 
         res.json({
             success: true,
@@ -385,14 +395,15 @@ exports.sendOtp = async (req, res) => {
 };
 
 exports.verifyOtp = async (req, res) => {
-    const { phoneNumber, otp } = req.body;
+    const { email, otp } = req.body;
 
-    if (!phoneNumber || !otp) {
-        return res.status(400).json({ message: 'Phone number and OTP are required' });
+    if (!email || !otp) {
+        return res.status(400).json({ message: 'Email and OTP are required' });
     }
 
     try {
-        const user = await prisma.user.findUnique({ where: { phoneNumber } });
+        const normalizedEmail = email.trim().toLowerCase();
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
         if (!user) {
             return res.status(400).json({ message: 'User not found' });
