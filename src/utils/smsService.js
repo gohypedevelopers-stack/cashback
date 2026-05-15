@@ -35,8 +35,12 @@ const sendOTPSms = async (mobileNumber, otp) => {
         senderid: SMS_CONFIG.senderId,
         mobileno: '91' + cleaned, // Prefixed 91 directly
         msgtext: message,
+        // Send all common variations to ensure the gateway picks the right one
         entityid: SMS_CONFIG.entityId,
-        tempid: SMS_CONFIG.templateId
+        peid: SMS_CONFIG.entityId,
+        tempid: SMS_CONFIG.templateId,
+        templateid: SMS_CONFIG.templateId,
+        dlt_template_id: SMS_CONFIG.templateId
     };
 
     const queryString = Object.entries(payload)
