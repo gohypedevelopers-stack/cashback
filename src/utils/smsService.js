@@ -4,7 +4,7 @@
  */
 
 const SMS_CONFIG = {
-    baseUrl: 'http://mshastra.com/sendurl.aspx',
+    baseUrl: 'https://mshastra.com/sendurl.aspx', // Switched to HTTPS
     user: (process.env.MSHASTRA_USER || 'ARWRDS').trim(),
     pwd: (process.env.MSHASTRA_PWD || 'py44bhe4').trim(),
     senderId: (process.env.MSHASTRA_SENDER_ID || 'ASRD').trim(),
@@ -28,19 +28,23 @@ const sendOTPSms = async (mobileNumber, otp) => {
     // EXACT template match from DLT screenshot
     const message = `Dear Customer Your login OTP is ${otp} Do not share this code . Thanks ASRD https://assuredrewards.in/signin`;
 
-    const params = new URLSearchParams({
+    // Manual query string construction to ensure %20 for spaces and 91 prefix
+    const payload = {
         user: SMS_CONFIG.user,
         pwd: SMS_CONFIG.pwd,
         senderid: SMS_CONFIG.senderId,
-        CountryCode: SMS_CONFIG.countryCode,
-        mobileno: cleaned,
+        mobileno: '91' + cleaned, // Prefixed 91 directly
         msgtext: message,
-    });
+        entityid: SMS_CONFIG.entityId,
+        tempid: SMS_CONFIG.templateId
+    };
 
-    if (SMS_CONFIG.entityId) params.append('entityid', SMS_CONFIG.entityId);
-    if (SMS_CONFIG.templateId) params.append('tempid', SMS_CONFIG.templateId);
+    const queryString = Object.entries(payload)
+        .filter(([_, val]) => val !== undefined && val !== '')
+        .map(([key, val]) => `${key}=${encodeURIComponent(val).replace(/\+/g, '%20')}`)
+        .join('&');
 
-    const url = `${SMS_CONFIG.baseUrl}?${params.toString()}`;
+    const url = `${SMS_CONFIG.baseUrl}?${queryString}`;
     
     // Log the URL for debugging (masking password)
     const maskedUrl = url.replace(`pwd=${SMS_CONFIG.pwd}`, 'pwd=********');
