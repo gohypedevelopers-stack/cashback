@@ -63,6 +63,16 @@ const normalizeBlogs = (blogs) =>
       }))
     : [];
 
+const formatLinkUrl = (url) => {
+  if (!url) return "#";
+  let trimmed = String(url).trim();
+  trimmed = trimmed.replace(/^https?:\/\/(https?:\/\/)/i, "$1");
+  if (/^(https?:\/\/|mailto:|tel:|#|\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+};
+
 const parseInlineMarkdown = (text) => {
   if (!text) return "";
 
@@ -105,9 +115,10 @@ const parseInlineMarkdown = (text) => {
       return (
         <a
           key={index}
-          href={linkMatch[2]}
+          href={formatLinkUrl(linkMatch[2])}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
           className="text-emerald-600 hover:text-emerald-700 underline font-semibold transition-colors"
         >
           {parseInlineMarkdown(linkMatch[1])}
@@ -829,7 +840,7 @@ const BlogPortal = () => {
                       <BlogContentToolbar
                         value={blog.content}
                         onChange={(value) => handleBlogChange(index, "content", value)}
-                        textareaRef={{ current: textareaRefs.current[index] }}
+                        textareaRef={{ get current() { return textareaRefs.current[index]; } }}
                       />
                       <span className="px-4 text-xs font-semibold text-slate-500">
                         Preview

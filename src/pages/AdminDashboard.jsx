@@ -9758,7 +9758,7 @@ const AdminDashboard = () => {
                                     onChange={(value) =>
                                       handleBlogFieldChange(editingBlogIndex, "content", value)
                                     }
-                                    textareaRef={{ current: blogTextareaRefs.current[editingBlogIndex] }}
+                                    textareaRef={{ get current() { return blogTextareaRefs.current[editingBlogIndex]; } }}
                                   />
                                   <textarea
                                     ref={(el) => (blogTextareaRefs.current[editingBlogIndex] = el)}

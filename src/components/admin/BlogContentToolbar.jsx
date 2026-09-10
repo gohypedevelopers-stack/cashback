@@ -52,6 +52,10 @@ const applyFormat = (value, action) => {
       return append('<p style="text-align:right">Right aligned text</p>');
     case "table":
       return append("| Heading | Heading |\n| --- | --- |\n| Cell | Cell |");
+    case "link":
+      return append("[Link text](https://example.com)");
+    case "image":
+      return append("![Image description](https://example.com/image.jpg)");
     default:
       return content;
   }
@@ -66,34 +70,63 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
   const [imageAltState, setImageAltState] = useState("");
   const [pendingSelection, setPendingSelection] = useState({ start: 0, end: 0 });
 
+  const getTextarea = () => {
+    if (typeof textareaRef === "function") {
+      const el = textareaRef();
+      if (el) return el;
+    }
+    if (textareaRef && typeof textareaRef === "object" && textareaRef.current) {
+      return textareaRef.current;
+    }
+    return document.querySelector("textarea");
+  };
+
   const handleCancelLink = () => {
     setIsLinkModalOpen(false);
-    const textarea = textareaRef?.current;
+    const textarea = getTextarea();
     if (textarea) {
       setTimeout(() => {
         textarea.focus();
-        textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+        if (pendingSelection?.start !== undefined && pendingSelection?.end !== undefined) {
+          textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+        }
       }, 0);
     }
   };
 
   const handleInsertLink = (e) => {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
     setIsLinkModalOpen(false);
 
-    const textarea = textareaRef?.current;
+    const textarea = getTextarea();
     const content = String(value || "");
-    const finalUrl = linkUrl.trim() || "https://example.com";
-    const finalText = linkTextState.trim() || "Link text";
-    const replacement = `[${finalText}](${finalUrl})`;
+
+    let cleanUrl = (linkUrl || "").trim();
+    // Fix double-protocol if user pasted full URL while 'https://' was in input
+    cleanUrl = cleanUrl.replace(/^https?:\/\/(https?:\/\/)/i, "$1");
+    if (!cleanUrl || cleanUrl === "https://" || cleanUrl === "http://") {
+      cleanUrl = "https://example.com";
+    } else if (!/^(https?:\/\/|mailto:|tel:|#|\/)/i.test(cleanUrl)) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+
+    const finalText = (linkTextState || "").trim() || "Link text";
+    const replacement = `[${finalText}](${cleanUrl})`;
+
+    let start = textarea ? pendingSelection.start : content.length;
+    let end = textarea ? pendingSelection.end : content.length;
+
+    if (start === undefined || start < 0 || start > content.length) {
+      start = content.length;
+    }
+    if (end === undefined || end < start || end > content.length) {
+      end = start;
+    }
 
     let newValue = "";
-    let start = content.length;
-    let end = content.length;
-
     if (textarea) {
-      start = pendingSelection.start;
-      end = pendingSelection.end;
       newValue = content.substring(0, start) + replacement + content.substring(end);
     } else {
       const needsNewLine = content && !content.endsWith("\n") ? "\n" : "";
@@ -108,39 +141,56 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
     if (textarea) {
       setTimeout(() => {
         textarea.focus();
-        textarea.setSelectionRange(start + 1, start + 1 + finalText.length);
+        textarea.setSelectionRange(start + replacement.length, start + replacement.length);
       }, 0);
     }
   };
 
   const handleCancelImage = () => {
     setIsImageModalOpen(false);
-    const textarea = textareaRef?.current;
+    const textarea = getTextarea();
     if (textarea) {
       setTimeout(() => {
         textarea.focus();
-        textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+        if (pendingSelection?.start !== undefined && pendingSelection?.end !== undefined) {
+          textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+        }
       }, 0);
     }
   };
 
   const handleInsertImage = (e) => {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
     setIsImageModalOpen(false);
 
-    const textarea = textareaRef?.current;
+    const textarea = getTextarea();
     const content = String(value || "");
-    const finalUrl = imageUrl.trim() || "https://example.com/image.jpg";
-    const finalAlt = imageAltState.trim() || "Image description";
-    const replacement = `![${finalAlt}](${finalUrl})`;
+
+    let cleanUrl = (imageUrl || "").trim();
+    cleanUrl = cleanUrl.replace(/^https?:\/\/(https?:\/\/)/i, "$1");
+    if (!cleanUrl || cleanUrl === "https://" || cleanUrl === "http://") {
+      cleanUrl = "https://example.com/image.jpg";
+    } else if (!/^(https?:\/\/|\/|data:)/i.test(cleanUrl)) {
+      cleanUrl = `https://${cleanUrl}`;
+    }
+
+    const finalAlt = (imageAltState || "").trim() || "Image description";
+    const replacement = `![${finalAlt}](${cleanUrl})`;
+
+    let start = textarea ? pendingSelection.start : content.length;
+    let end = textarea ? pendingSelection.end : content.length;
+
+    if (start === undefined || start < 0 || start > content.length) {
+      start = content.length;
+    }
+    if (end === undefined || end < start || end > content.length) {
+      end = start;
+    }
 
     let newValue = "";
-    let start = content.length;
-    let end = content.length;
-
     if (textarea) {
-      start = pendingSelection.start;
-      end = pendingSelection.end;
       newValue = content.substring(0, start) + replacement + content.substring(end);
     } else {
       const needsNewLine = content && !content.endsWith("\n") ? "\n" : "";
@@ -162,12 +212,12 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
 
   const handleClick = (action) => {
     const content = String(value || "");
-    const textarea = textareaRef?.current;
+    const textarea = getTextarea();
 
     if (action === "link") {
       const start = textarea ? textarea.selectionStart : content.length;
       const end = textarea ? textarea.selectionEnd : content.length;
-      const selectedText = textarea ? content.substring(start, end) : "";
+      const selectedText = textarea && start !== end ? content.substring(start, end) : "";
 
       setLinkTextState(selectedText || "");
       setLinkUrl("https://");
@@ -179,7 +229,7 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
     if (action === "image") {
       const start = textarea ? textarea.selectionStart : content.length;
       const end = textarea ? textarea.selectionEnd : content.length;
-      const selectedText = textarea ? content.substring(start, end) : "";
+      const selectedText = textarea && start !== end ? content.substring(start, end) : "";
 
       setImageAltState(selectedText || "");
       setImageUrl("https://");
@@ -247,6 +297,11 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
       case "table":
         replacement = "\n| Heading | Heading |\n| --- | --- |\n| Cell | Cell |\n";
         break;
+      case "link":
+        replacement = selectedText
+          ? `[${selectedText}](https://example.com)`
+          : "[Link text](https://example.com)";
+        break;
       default:
         return;
     }
@@ -280,6 +335,8 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
           textarea.setSelectionRange(start + 29, start + 29 + selectedText.length);
         } else if (action === "right") {
           textarea.setSelectionRange(start + 28, start + 28 + selectedText.length);
+        } else if (action === "link") {
+          textarea.setSelectionRange(start + 1, start + 1 + selectedText.length);
         } else {
           textarea.setSelectionRange(start, start + replacement.length);
         }
@@ -307,6 +364,8 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
           textarea.setSelectionRange(start + 29, start + 42); // "Centered text"
         } else if (action === "right") {
           textarea.setSelectionRange(start + 28, start + 46); // "Right aligned text"
+        } else if (action === "link") {
+          textarea.setSelectionRange(start + 1, start + 10); // "Link text"
         } else {
           textarea.setSelectionRange(start + replacement.length, start + replacement.length);
         }
@@ -341,6 +400,7 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
             <button
               key={tool.action}
               type="button"
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleClick(tool.action)}
               className={toolbarButtonClass}
               title={tool.label}
@@ -353,10 +413,18 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
       </div>
 
       {isLinkModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
+          onClick={handleCancelLink}
+        >
           <div 
-            className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-white/10 dark:bg-[#131317] animate-in zoom-in-95 duration-200"
+            className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-white/10 dark:bg-[#131317]"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                handleCancelLink();
+              }
+            }}
           >
             <form onSubmit={handleInsertLink} className="space-y-4">
               <div className="flex items-center gap-3">
@@ -391,6 +459,7 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
                   type="text"
                   value={linkUrl}
                   onChange={(e) => setLinkUrl(e.target.value)}
+                  onFocus={(e) => e.target.select()}
                   placeholder="https://example.com"
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-950 placeholder:text-slate-400 focus:border-[#059669] focus:outline-none dark:border-white/10 dark:bg-black/20 dark:text-white"
                   autoFocus={!!linkTextState}
@@ -418,10 +487,18 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
       )}
 
       {isImageModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4"
+          onClick={handleCancelImage}
+        >
           <div 
-            className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-white/10 dark:bg-[#131317] animate-in zoom-in-95 duration-200"
+            className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-white/10 dark:bg-[#131317]"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                handleCancelImage();
+              }
+            }}
           >
             <form onSubmit={handleInsertImage} className="space-y-4">
               <div className="flex items-center gap-3">
@@ -442,6 +519,7 @@ const BlogContentToolbar = ({ value, onChange, textareaRef }) => {
                   type="text"
                   value={imageUrl}
                   onChange={(e) => setImageUrl(e.target.value)}
+                  onFocus={(e) => e.target.select()}
                   placeholder="https://example.com/image.png"
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-950 placeholder:text-slate-400 focus:border-[#059669] focus:outline-none dark:border-white/10 dark:bg-black/20 dark:text-white"
                   autoFocus

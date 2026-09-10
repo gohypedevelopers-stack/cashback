@@ -35,6 +35,16 @@ const normalizeBlogs = (blogs) =>
       }))
     : [];
 
+const formatLinkUrl = (url) => {
+  if (!url) return "#";
+  let trimmed = String(url).trim();
+  trimmed = trimmed.replace(/^https?:\/\/(https?:\/\/)/i, "$1");
+  if (/^(https?:\/\/|mailto:|tel:|#|\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+};
+
 const parseInlineMarkdown = (text) => {
   if (!text) return "";
 
@@ -74,7 +84,7 @@ const parseInlineMarkdown = (text) => {
       return (
         <a
           key={index}
-          href={linkMatch[2]}
+          href={formatLinkUrl(linkMatch[2])}
           target="_blank"
           rel="noopener noreferrer"
           className="text-emerald-600 dark:text-emerald-400 hover:underline font-semibold"
