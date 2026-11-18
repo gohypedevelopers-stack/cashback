@@ -139,9 +139,9 @@ const Layout = ({ children }) => {
                 >
                   <ChevronLeft size={18} className="text-current" />
                 </LiquidButton>
-                <h1 className="text-base font-semibold leading-none text-gray-800 dark:text-gray-100">
+                <p className="text-base font-semibold leading-none text-gray-800 dark:text-gray-100">
                   {headerTitle}
-                </h1>
+                </p>
               </div>
               <div className="flex items-center gap-3">
                 {/* ModeToggle removed */}

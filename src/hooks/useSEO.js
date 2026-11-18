@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { SITE_URL, getCanonicalUrl } from '../lib/seo';
 
 export const useSEO = (title, description, options = {}) => {
   useEffect(() => {
@@ -40,18 +41,13 @@ export const useSEO = (title, description, options = {}) => {
     }
 
     const canonicalUrl =
-      options.canonical ||
-      (typeof window !== 'undefined'
-        ? window.location.origin + window.location.pathname
-        : '');
+      options.canonical || getCanonicalUrl(window.location.pathname);
 
-    if (canonicalUrl) {
-      setLinkTag('canonical', canonicalUrl);
-      setMetaTag('property', 'og:url', canonicalUrl);
-      setMetaTag('name', 'twitter:url', canonicalUrl);
-    }
+    setLinkTag('canonical', canonicalUrl);
+    setMetaTag('property', 'og:url', canonicalUrl);
+    setMetaTag('name', 'twitter:url', canonicalUrl);
 
-    const defaultImage = `${typeof window !== 'undefined' ? window.location.origin : 'https://assuredrewards.in'}/light theme incentify logo.png`;
+    const defaultImage = `${SITE_URL}/light%20theme%20incentify%20logo.png`;
     const image = options.image || defaultImage;
     setMetaTag('property', 'og:image', image);
     setMetaTag('name', 'twitter:image', image);

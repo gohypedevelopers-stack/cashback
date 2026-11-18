@@ -6,10 +6,12 @@ Disallow: /admin/
 Disallow: /vendor-dashboard/
 Disallow: /vendor-panel/
 Disallow: /brand-registration
+Disallow: /blog-edit
 
 # QR Scanning Flow
 Disallow: /scan/
 Disallow: /redeem/
+Disallow: /claim
 
 # User Account and Sensitive Data
 Disallow: /profile/
@@ -18,5 +20,9 @@ Disallow: /payout/
 Disallow: /history
 Disallow: /orders
 Disallow: /transaction-history
+
+# Internal demo pages
+Disallow: /ux-demo
+Disallow: /liquid-glass
 
 Sitemap: https://assuredrewards.in/sitemap.xml

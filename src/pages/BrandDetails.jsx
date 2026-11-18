@@ -14,6 +14,7 @@ import {
 import FallbackImage from "../components/FallbackImage";
 import HowItWorks from "../components/HowItWorks";
 import { getPublicBrandDetails, getPublicBrands } from "../lib/api";
+import { useSEO } from "../hooks/useSEO";
 import { getApiBaseUrl, resolvePublicAssetUrl } from "../lib/apiClient";
 
 const BrandAccordion = ({ title, items }) => {
@@ -109,6 +110,15 @@ const BrandDetails = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
+
+  useSEO(
+    brandData?.name
+      ? `${brandData.name} Cashback Offers & Rewards | Assured Rewards`
+      : "Brand Cashback Offers & Rewards | Assured Rewards",
+    brandData?.name
+      ? `Buy genuine ${brandData.name} products, scan the Assured Rewards QR code and get instant cashback in your wallet. View ${brandData.name} offers and FAQs.`
+      : "Explore partner brand offers on Assured Rewards. Scan the QR code on genuine products and get instant cashback in your wallet."
+  );
 
   useEffect(() => {
     let isMounted = true;

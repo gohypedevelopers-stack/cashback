@@ -12,6 +12,7 @@ import { ThemeProvider } from "./components/ThemeProvider";
 import { ToastProvider } from "./components/ui/ToastContext";
 import { ToastContainer } from "./components/ui/Toast";
 import ScrollToTop from "./components/ScrollToTop";
+import RouteCanonical from "./components/RouteCanonical";
 
 import Home from "./pages/Home";
 const GiftCards = lazy(() => import("./pages/GiftCards"));
@@ -78,6 +79,7 @@ function App() {
       <ToastProvider>
         <BrowserRouter>
           <ScrollToTop />
+          <RouteCanonical />
           <Suspense fallback={<div className="flex h-screen w-full items-center justify-center bg-background"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div></div>}>
             <Routes>
             <Route

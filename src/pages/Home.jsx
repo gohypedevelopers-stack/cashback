@@ -26,6 +26,7 @@ import { getPublicHome, getUserHomeStats } from "../lib/api";
 import { getApiBaseUrl, resolvePublicAssetUrl } from "../lib/apiClient";
 import { useAuth } from "../lib/auth";
 import { useSEO } from "../hooks/useSEO";
+import HomeSeoContent from "../components/HomeSeoContent";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -486,6 +487,10 @@ const Home = () => {
       className="min-h-screen font-sans pb-28 transition-colors duration-300 bg-primary/10 dark:bg-zinc-950"
     >
       <div className="px-4 pt-4 space-y-4">
+        <h1 className="px-1 text-[13px] font-semibold text-zinc-700 dark:text-zinc-300">
+          Assured Rewards: scan genuine products & get instant cashback
+        </h1>
+
         {/* --- 1  HERO CAROUSEL --- */}
         {isLoading ? (
           <div className="w-full h-[280px] sm:h-[270px] rounded-3xl bg-white border border-gray-100 dark:bg-zinc-900 dark:border-zinc-800 animate-pulse shadow-sm" />
@@ -681,6 +686,7 @@ const Home = () => {
         </div>
 
         {/* --- 5  PARTNER BRANDS --- */}
+        {(isLoading || brands.length > 0) && (
         <div className="brands-rail">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -719,7 +725,7 @@ const Home = () => {
                     <div className="w-10 h-2.5 rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse mt-0.5" />
                   </div>
                 ))
-            ) : brands.length > 0 ? (
+            ) : (
               brands.map((b, idx) => (
                 <Link
                   key={b.id ? `brand-${b.id}` : `brand-${b.name || idx}`}
@@ -742,16 +748,14 @@ const Home = () => {
                   </span>
                 </Link>
               ))
-            ) : (
-              <div className="text-[11px] text-gray-400 italic">
-                No brands yet
-              </div>
             )}
           </div>
           </div>
         </div>
+        )}
 
         {/* --- 6. TOP OFFERS --- */}
+        {(isLoading || topOffers.length > 0) && (
         <div className="offers-rail relative py-3 my-1">
           {/* Subtle full-bleed background */}
           <div className="absolute inset-0 -mx-4 bg-gradient-to-b from-emerald-50/50 to-transparent dark:from-emerald-900/5 dark:to-transparent -z-10 pointer-events-none" />
@@ -788,7 +792,7 @@ const Home = () => {
                     className="offer-card w-[130px] h-[165px] rounded-[24px] bg-white border border-gray-100 dark:bg-zinc-900 dark:border-zinc-800 shadow-sm animate-pulse snap-center shrink-0"
                   />
                 ))
-            ) : topOffers.length > 0 ? (
+            ) : (
               topOffers.map((offer, i) => {
                 const amountText = fmtRound(offer.maxCashback);
 
@@ -876,14 +880,11 @@ const Home = () => {
                   </div>
                 );
               })
-            ) : (
-              <div className="text-[12px] text-gray-400 italic px-4">
-                No top offers available.
-              </div>
             )}
           </div>
           </div>
         </div>
+        )}
 
         {/* --- 7.5 PRODUCT REPORT --- */}
         <div className="mb-5">
@@ -942,6 +943,9 @@ const Home = () => {
         <div className="mb-6">
           <HowItWorks />
         </div>
+
+        {/* --- 10  ABOUT / SEO CONTENT --- */}
+        <HomeSeoContent />
       </div>
     </div>
   );

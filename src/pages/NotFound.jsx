@@ -1,10 +1,20 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Home, ArrowLeft } from "lucide-react";
 import { motion } from "framer-motion";
 
 const NotFound = () => {
   const navigate = useNavigate();
+
+  // The server answers every unknown URL with 200 (SPA fallback), so tell crawlers not to index it.
+  useEffect(() => {
+    document.title = "Page Not Found | Assured Rewards";
+    const robots = document.createElement("meta");
+    robots.setAttribute("name", "robots");
+    robots.setAttribute("content", "noindex, follow");
+    document.head.appendChild(robots);
+    return () => robots.remove();
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-zinc-950 flex flex-col items-center justify-center p-6 relative overflow-hidden">
