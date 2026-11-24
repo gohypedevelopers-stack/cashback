@@ -7,7 +7,7 @@ This guide is aligned with the current repo structure and scripts.
 - Server IP: `82.112.235.245`
 - SSH user: `root`
 - Frontend (Next.js) deploy path: `/var/www/assuredrewards/web` (`current` -> active release)
-- Frontend PM2 app name: `assuredrewards-web` (port `3000`, localhost only)
+- Frontend PM2 app name: `assuredrewards-web` (port `3001`, localhost only)
 - Old static frontend path (pre-Next.js, kept for rollback): `/var/www/assuredrewards/frontend`
 - Backend deploy path: `/var/www/cashback/cashback`
 - Backend PM2 app name: `cashback-api`
@@ -38,7 +38,7 @@ What this script does:
 4. Uploads it and extracts it to `/var/www/assuredrewards/web/releases/<timestamp>`.
 5. Points `/var/www/assuredrewards/web/current` at the new release and restarts PM2 app
    `assuredrewards-web` (starts it on first deploy). Keeps the last 3 releases.
-6. Checks that `http://127.0.0.1:3000/` answers on the server.
+6. Checks that `http://127.0.0.1:3001/` answers on the server.
 
 nginx is not touched by the script. The one-time nginx change is under
 "First-Time Next.js Frontend Setup" below.
@@ -131,17 +131,17 @@ pm2 startup
 Do this once, when switching from the old static Vite build to Next.js.
 
 1. **Node.js 20.9+ on the server** (`node -v`). The backend already uses Node 22.
-2. **Port 3000 free**: `ss -ltnp | grep :3000` should print nothing.
+   **PM2 installed** (`pm2 -v`); if missing: `npm install -g pm2`.2. **Port 3001 free**: `ss -ltnp | grep :3001` should print nothing.
 3. **First deploy** from Windows: `.\scripts\deploy-frontend.ps1`. It starts PM2 app
    `assuredrewards-web` and runs `pm2 save`. Run `pm2 startup` once if PM2 isn't already set to start on boot.
    The live site is still served by the old static files at this point.
 4. **Check it on the server** before switching traffic:
    ```bash
-   curl -s http://127.0.0.1:3000/ | grep -o '<title>[^<]*'
-   curl -s http://127.0.0.1:3000/sitemap.xml | head
+   curl -s http://127.0.0.1:3001/ | grep -o '<title>[^<]*'
+   curl -s http://127.0.0.1:3001/sitemap.xml | head
    ```
 5. **Switch nginx**: back up the site config, then replace only the `location /` block
-   (the old `root .../frontend; try_files ...` one) with a `proxy_pass` to `127.0.0.1:3000`.
+   (the old `root .../frontend; try_files ...` one) with a `proxy_pass` to `127.0.0.1:3001`.
    Add the `/_next/static/` block too. Keep the SSL, `/api/` and `/uploads/` blocks unchanged.
    Full example: `deploy/nginx-assuredrewards.conf.example`.
    ```bash

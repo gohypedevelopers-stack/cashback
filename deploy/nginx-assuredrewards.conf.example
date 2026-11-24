@@ -1,11 +1,11 @@
 # Example nginx server block for assuredrewards.in after the Next.js move.
 # Only the `location /` block changes compared to the old static SPA setup:
 # instead of `root ...; try_files $uri $uri/ /app-shell.html;` it proxies to
-# the Next.js server (PM2 app "assuredrewards-web" on 127.0.0.1:3000).
+# the Next.js server (PM2 app "assuredrewards-web" on 127.0.0.1:3001).
 # Keep your existing SSL (listen 443 / certificates) and /api, /uploads blocks as they are.
 
 upstream assuredrewards_web {
-    server 127.0.0.1:3000;
+    server 127.0.0.1:3001;
     keepalive 32;
 }
 

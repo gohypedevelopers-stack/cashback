@@ -12,7 +12,7 @@ module.exports = {
       max_memory_restart: "400M",
       env: {
         NODE_ENV: "production",
-        PORT: 3000,
+        PORT: 3001,
         HOSTNAME: "127.0.0.1",
         // Server-side rendering talks to the backend directly (no public round trip).
         API_INTERNAL_URL: "http://127.0.0.1:5000",

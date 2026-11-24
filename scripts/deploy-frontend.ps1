@@ -20,16 +20,34 @@ Set-StrictMode -Version Latest
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $projectRoot
 
-npm ci
+# Pre-flight on the server, before building or uploading anything:
+# PM2 must exist, and on the first deploy port 3001 must be free
+# (never take over a port another app is using).
+$preflight = @"
+command -v pm2 > /dev/null 2>&1 || { echo 'ERROR: pm2 is not installed on the server (npm install -g pm2).'; exit 1; }
+if ! pm2 describe $Pm2App > /dev/null 2>&1 && ss -ltn | grep -q ':3001 '; then
+  echo 'ERROR: port 3001 is already used by another program. Nothing was changed.'
+  ss -ltnp | grep ':3001 '
+  exit 1
+fi
+echo 'Server pre-flight OK.'
+"@
+$preflight = $preflight -replace "`r", ""
+$preflight | ssh $Server "bash -s"
+if ($LASTEXITCODE -ne 0) {
+    throw "Server pre-flight failed. Nothing was deployed."
+}
+
+npm.cmd ci
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "npm ci failed. Retrying with npm install..."
-    npm install
+    npm.cmd install
     if ($LASTEXITCODE -ne 0) {
         throw "Dependency install failed."
     }
 }
 
-npm run build
+npm.cmd run build
 if ($LASTEXITCODE -ne 0) {
     throw "Frontend build failed."
 }
@@ -71,7 +89,7 @@ else
 fi
 cd $RemoteBase/releases && ls -1t | tail -n +$($KeepReleases + 1) | xargs -r rm -rf
 sleep 3
-curl -fsS -o /dev/null -w 'Next.js responded with HTTP %{http_code}\n' http://127.0.0.1:3000/
+curl -fsS -o /dev/null -w 'Next.js responded with HTTP %{http_code}\n' http://127.0.0.1:3001/
 pm2 status $Pm2App
 "@
 
