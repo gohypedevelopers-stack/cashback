@@ -38,8 +38,8 @@ const normalizeBaseUrl = (raw) => {
   }
 };
 
-const ENV_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || "");
-const BASE_URL = ENV_BASE_URL || (import.meta.env.DEV ? DEV_DEFAULT_API : "");
+const ENV_BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL || "");
+const BASE_URL = ENV_BASE_URL || ((process.env.NODE_ENV !== "production") ? DEV_DEFAULT_API : "");
 
 export const getApiBaseUrl = () => BASE_URL;
 

@@ -1,8 +1,10 @@
+"use client";
+
 import React, { useEffect, useRef, useState } from "react";
 import { ChevronLeft, Gift, Home, ShoppingBag, Wallet } from "lucide-react";
 
 import { LiquidButton } from "./ui/LiquidGlassButton";
-import { useLocation, useMatch, useNavigate } from "react-router-dom";
+import { useLocation, useMatch, useNavigate } from "@/lib/router";
 import LiquidDock from "./LiquidDock";
 import { useTheme } from "./ThemeProvider";
 import UserProfileMenu from "./UserProfileMenu";

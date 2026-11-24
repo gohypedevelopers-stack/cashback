@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link } from "@/lib/router";
 
 // Static, crawlable description of Assured Rewards for the homepage.
 // Rendered without any API data so search engines always see real content.

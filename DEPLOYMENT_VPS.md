@@ -6,9 +6,11 @@ This guide is aligned with the current repo structure and scripts.
 
 - Server IP: `82.112.235.245`
 - SSH user: `root`
-- Frontend deploy path: `/var/www/assuredrewards/frontend`
+- Frontend (Next.js) deploy path: `/var/www/assuredrewards/web` (`current` -> active release)
+- Frontend PM2 app name: `assuredrewards-web` (port `3000`, localhost only)
+- Old static frontend path (pre-Next.js, kept for rollback): `/var/www/assuredrewards/frontend`
 - Backend deploy path: `/var/www/cashback/cashback`
-- PM2 app name: `cashback-api`
+- Backend PM2 app name: `cashback-api`
 
 ## Deployment Options
 
@@ -30,10 +32,16 @@ Run these from the repo root (`e:\webapp`).
 What this script does:
 
 1. Runs `npm ci` (falls back to `npm install` if needed).
-2. Runs `npm run build`.
-3. Removes old frontend `assets` + `index.html` on server.
-4. Uploads `dist/*` to `/var/www/assuredrewards/frontend`.
-5. Runs `nginx -t && systemctl reload nginx`.
+2. Runs `npm run build` (Next.js, `output: "standalone"`). Blog posts and brand pages are
+   pre-rendered from the live API, using `NEXT_PUBLIC_API_BASE_URL` in `.env.production`.
+3. Packs `.next/standalone` + `.next/static` + `public/` into a `.tgz` (no `.env` files).
+4. Uploads it and extracts it to `/var/www/assuredrewards/web/releases/<timestamp>`.
+5. Points `/var/www/assuredrewards/web/current` at the new release and restarts PM2 app
+   `assuredrewards-web` (starts it on first deploy). Keeps the last 3 releases.
+6. Checks that `http://127.0.0.1:3000/` answers on the server.
+
+nginx is not touched by the script. The one-time nginx change is under
+"First-Time Next.js Frontend Setup" below.
 
 ### Backend
 
@@ -56,7 +64,7 @@ What this script does:
 If needed, you can override defaults:
 
 ```powershell
-.\scripts\deploy-frontend.ps1 -Server "root@82.112.235.245" -RemoteDir "/var/www/assuredrewards/frontend"
+.\scripts\deploy-frontend.ps1 -Server "root@82.112.235.245" -RemoteBase "/var/www/assuredrewards/web" -Pm2App "assuredrewards-web"
 .\scripts\deploy-backend.ps1 -Server "root@82.112.235.245" -RemoteAppDir "/var/www/cashback/cashback" -Branch "main" -Pm2App "cashback-api"
 ```
 
@@ -66,30 +74,14 @@ If needed, you can override defaults:
 
 ### Frontend Manual Flow
 
-### 1) Build frontend locally
+Use `scripts/deploy-frontend.ps1`. It builds, packages and restarts in one step.
+To roll back to the previous release by hand:
 
 ```bash
-npm run build
-```
-
-### 2) Upload build to server
-
-Windows PowerShell:
-
-```powershell
-scp -r .\dist\* root@82.112.235.245:/var/www/assuredrewards/frontend/
-```
-
-Git Bash / macOS / Linux:
-
-```bash
-scp -r ./dist/* root@82.112.235.245:/var/www/assuredrewards/frontend/
-```
-
-### 3) Validate and reload Nginx
-
-```bash
-ssh root@82.112.235.245 "nginx -t && systemctl reload nginx"
+ssh root@82.112.235.245
+cd /var/www/assuredrewards/web/releases && ls -1t        # newest first
+ln -sfn /var/www/assuredrewards/web/releases/<previous> /var/www/assuredrewards/web/current
+pm2 restart assuredrewards-web
 ```
 
 ### Backend Manual Flow
@@ -134,13 +126,48 @@ pm2 startup
 
 ---
 
+## First-Time Next.js Frontend Setup
+
+Do this once, when switching from the old static Vite build to Next.js.
+
+1. **Node.js 20.9+ on the server** (`node -v`). The backend already uses Node 22.
+2. **Port 3000 free**: `ss -ltnp | grep :3000` should print nothing.
+3. **First deploy** from Windows: `.\scripts\deploy-frontend.ps1`. It starts PM2 app
+   `assuredrewards-web` and runs `pm2 save`. Run `pm2 startup` once if PM2 isn't already set to start on boot.
+   The live site is still served by the old static files at this point.
+4. **Check it on the server** before switching traffic:
+   ```bash
+   curl -s http://127.0.0.1:3000/ | grep -o '<title>[^<]*'
+   curl -s http://127.0.0.1:3000/sitemap.xml | head
+   ```
+5. **Switch nginx**: back up the site config, then replace only the `location /` block
+   (the old `root .../frontend; try_files ...` one) with a `proxy_pass` to `127.0.0.1:3000`.
+   Add the `/_next/static/` block too. Keep the SSL, `/api/` and `/uploads/` blocks unchanged.
+   Full example: `deploy/nginx-assuredrewards.conf.example`.
+   ```bash
+   cp /etc/nginx/sites-available/<site> /root/<site>.before-nextjs
+   nano /etc/nginx/sites-available/<site>
+   nginx -t && systemctl reload nginx
+   ```
+6. **Rollback** (if anything looks wrong): restore the backup and reload nginx. The old static
+   files in `/var/www/assuredrewards/frontend` are untouched, so the old site comes straight back.
+   ```bash
+   cp /root/<site>.before-nextjs /etc/nginx/sites-available/<site>
+   nginx -t && systemctl reload nginx
+   ```
+
+Runtime settings for the frontend (port, backend URL for server-side rendering) are in
+`deploy/ecosystem.frontend.config.cjs`. Build-time public settings (`NEXT_PUBLIC_*`) come
+from `.env.production` on the machine that runs the build.
+
 ## Pre-Deploy Checklist
 
 - Local code has been tested.
 - Frontend build succeeds (`npm run build`).
+- `.env.production` has all `NEXT_PUBLIC_*` keys (API URL, QR URL, Razorpay, Firebase).
 - Backend `.env` on server is up to date.
 - `DATABASE_URL` and Prisma migrations are correct for production DB.
-- PM2 app name is still `cashback-api`.
+- PM2 app names are still `cashback-api` (backend) and `assuredrewards-web` (frontend).
 
 ## Post-Deploy Checklist
 
@@ -171,10 +198,8 @@ nginx -t
 
 ### Frontend
 
-```bash
-npm run build
-scp -r ./dist/* root@82.112.235.245:/var/www/assuredrewards/frontend/
-ssh root@82.112.235.245 "nginx -t && systemctl reload nginx"
+```powershell
+.\scripts\deploy-frontend.ps1
 ```
 
 ### Backend

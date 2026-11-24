@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export const AUTH_TOKEN_KEY = "cashback_auth_token";
 export const AUTH_CHANGE_EVENT = "cashback-auth-change";
@@ -81,26 +81,20 @@ export const popPostLoginRedirect = () => {
   return target;
 };
 
+const subscribeToAuth = (callback) => {
+  window.addEventListener(AUTH_CHANGE_EVENT, callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener(AUTH_CHANGE_EVENT, callback);
+    window.removeEventListener("storage", callback);
+  };
+};
+
+// useSyncExternalStore: the server render (and hydration) sees "logged out",
+// then the client immediately re-renders with the real token. Pages rendered
+// only in the browser get the real token on their first render.
 export const useAuth = () => {
-  const [authToken, setAuthToken] = useState(() => {
-    return getAuthToken();
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const syncAuthToken = () => {
-      setAuthToken(getAuthToken());
-    };
-
-    window.addEventListener(AUTH_CHANGE_EVENT, syncAuthToken);
-    window.addEventListener("storage", syncAuthToken);
-
-    return () => {
-      window.removeEventListener(AUTH_CHANGE_EVENT, syncAuthToken);
-      window.removeEventListener("storage", syncAuthToken);
-    };
-  }, []);
+  const authToken = useSyncExternalStore(subscribeToAuth, getAuthToken, () => "");
 
   return {
     authToken,

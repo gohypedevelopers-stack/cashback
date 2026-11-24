@@ -26,14 +26,14 @@ e:\webapp
 
 ## Environment Variables
 
-### Frontend (`.env.local` / `.env.production`)
+### Frontend (`.env.development.local` / `.env.production`)
 
 Use `.env.example` as a base:
 
 ```env
-VITE_API_BASE_URL=https://your-backend-domain.example
-VITE_QR_BASE_URL=https://your-frontend-domain.example
-VITE_RAZORPAY_KEY_ID=rzp_live_xxxxxxxxxxxxx
+NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain.example
+NEXT_PUBLIC_QR_BASE_URL=https://your-frontend-domain.example
+NEXT_PUBLIC_RAZORPAY_KEY_ID=rzp_live_xxxxxxxxxxxxx
 ```
 
 ### Backend (`cashback backend/cashback/.env`)
@@ -71,7 +71,7 @@ npm install
 npm run dev
 ```
 
-Vite dev server proxies `/api` to `http://localhost:5000` (see `vite.config.js`).
+The Next.js dev server (http://localhost:3000) forwards `/api` and `/uploads` to `http://localhost:5000` (see `next.config.mjs`). Local-only settings go in `.env.development.local`; production builds use `.env.production`.
 
 ## Production Build (frontend)
 

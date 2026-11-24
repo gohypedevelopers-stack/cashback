@@ -1,0 +1,52 @@
+# Example nginx server block for assuredrewards.in after the Next.js move.
+# Only the `location /` block changes compared to the old static SPA setup:
+# instead of `root ...; try_files $uri $uri/ /app-shell.html;` it proxies to
+# the Next.js server (PM2 app "assuredrewards-web" on 127.0.0.1:3000).
+# Keep your existing SSL (listen 443 / certificates) and /api, /uploads blocks as they are.
+
+upstream assuredrewards_web {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+
+server {
+    server_name assuredrewards.in www.assuredrewards.in;
+
+    # ... existing listen 443 ssl / ssl_certificate lines stay here ...
+
+    client_max_body_size 20m;
+
+    # Backend (unchanged)
+    location /api/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+    }
+
+    # Next.js build assets are content-hashed: cache them for a year.
+    location /_next/static/ {
+        alias /var/www/assuredrewards/web/current/.next/static/;
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
+    # Everything else is rendered by Next.js
+    location / {
+        proxy_pass http://assuredrewards_web;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

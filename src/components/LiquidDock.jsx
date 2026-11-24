@@ -1,6 +1,6 @@
 
 import React, { useRef, useState, useLayoutEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation } from "@/lib/router";
 import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
 
 const DockIcon = React.forwardRef(({ children, to, label, isActive, mouseX, onClick }, forwardedRef) => {

@@ -1,18 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { LogIn, LogOut, User, Wallet, HelpCircle } from "lucide-react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation } from "@/lib/router";
 import StarBorder from "./StarBorder";
 import { getMe } from "../lib/api";
 import { resolvePublicAssetUrl } from "../lib/apiClient";
-import { AUTH_CHANGE_EVENT, clearAuthToken, getAuthToken } from "../lib/auth";
+import { AUTH_CHANGE_EVENT, clearAuthToken, useAuth } from "../lib/auth";
 
 const UserProfileMenu = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const containerRef = useRef(null);
-  const [token, setToken] = useState(() => {
-    return getAuthToken() || null;
-  });
+  // useAuth is SSR-safe: "logged out" while hydrating, then the real token.
+  const { authToken } = useAuth();
+  const token = authToken || null;
   const [profile, setProfile] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -24,7 +24,6 @@ const UserProfileMenu = () => {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const handleAuthChange = () => {
-      setToken(getAuthToken() || null);
       setImgError(false);
     };
     window.addEventListener(AUTH_CHANGE_EVENT, handleAuthChange);
@@ -73,7 +72,6 @@ const UserProfileMenu = () => {
         if (!isActive) return;
         if (err.status === 401) {
           clearAuthToken();
-          setToken(null);
         }
         setProfile(null);
         setError(err.message || "Unable to load profile.");
@@ -91,7 +89,6 @@ const UserProfileMenu = () => {
 
   const handleLogout = () => {
     clearAuthToken();
-    setToken(null);
     setIsOpen(false);
     setImgError(false);
   };

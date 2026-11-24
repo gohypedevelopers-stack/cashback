@@ -57,7 +57,7 @@ import {
 
 const COLORS = ["#059669", "#f43f5e", "#3b82f6", "#f59e0b", "#8b5cf6"];
 const QR_BASE_URL =
-  import.meta.env.VITE_QR_BASE_URL ||
+  process.env.NEXT_PUBLIC_QR_BASE_URL ||
   "https://shakti-gold-rewards.vercel.app/q";
 const MAX_QR_PRICE = 10000;
 
