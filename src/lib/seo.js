@@ -81,8 +81,10 @@ export const buildMetadata = ({
 };
 
 // Must match the title/description BrandDetails.jsx used before the Next.js move.
-export const brandMetadata = (brand, path) =>
-  buildMetadata({
+// Brand-details pages stay reachable but are kept out of Google's index
+// (noindex, follow), and they are not listed in the sitemap.
+export const brandMetadata = (brand, path) => ({
+  ...buildMetadata({
     path,
     title: brand?.name
       ? `${brand.name} Cashback Offers & Rewards | Assured Rewards`
@@ -90,4 +92,6 @@ export const brandMetadata = (brand, path) =>
     description: brand?.name
       ? `Buy genuine ${brand.name} products, scan the Assured Rewards QR code and get instant cashback in your wallet. View ${brand.name} offers and FAQs.`
       : "Explore partner brand offers on Assured Rewards. Scan the QR code on genuine products and get instant cashback in your wallet.",
-  });
+  }),
+  robots: { index: false, follow: true },
+});
