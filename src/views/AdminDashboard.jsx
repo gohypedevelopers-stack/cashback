@@ -1346,6 +1346,7 @@ const AdminDashboard = () => {
   const navRouteMap = {
     overview: "/admin/overview",
     analytics: "/admin/analytics",
+    "ai-concierge": "/ai-assistant/console",
     operations: "/admin/operations",
     campaigns: "/admin/campaigns",
     orders: "/admin/orders",

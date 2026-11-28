@@ -26,6 +26,7 @@ import {
     Gift,
     ShoppingBag,
     Newspaper,
+    Bot,
 } from 'lucide-react';
 import StarBorder from './StarBorder';
 import { useTheme } from "./ThemeProvider";
@@ -55,6 +56,7 @@ const AdminSidebar = ({
             items: [
                 { id: 'overview', label: 'Dashboard', icon: LayoutGrid },
                 { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+                { id: 'ai-concierge', label: 'AI WhatsApp Concierge', icon: Bot },
             ],
         },
         {
